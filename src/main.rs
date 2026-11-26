@@ -228,16 +228,16 @@ pub fn make_runtime(startup: &config::Startup) -> Result<Arc<Runtime>> {
 
 pub fn run_engine(rt: &Arc<Runtime>, args: Vec<String>) -> Result<()> {
     set_interactive_qos();
-    app::startup_status("Đang khởi tạo bộ nhớ và luồng game…");
+    app::startup_status("Initializing game memory and threads…");
     let (mut store, instance) = instantiate(rt, 0)?;
-    app::startup_status("Đang khởi tạo thư viện game…");
+    app::startup_status("Initializing game libraries…");
     call_export(&mut store, &instance, "_emscripten_tls_init", &[])?;
     call_export(&mut store, &instance, "__wasm_call_ctors", &[])?;
     let argv = build_argv(&mut store, &instance, &rt.mem, &args)?;
     eprintln!("[host] main: {}", args.join(" "));
     let main = instance.get_func(&mut store, "__main_argc_argv").context("no main")?;
     let mut out = [Val::I32(0)];
-    app::startup_status("Đang khởi động GTA V, chờ hình ảnh đầu tiên…");
+    app::startup_status("Starting GTA V, waiting for the first frame…");
     match main.call(&mut store, &[Val::I32(args.len().min(i32::MAX as usize) as i32), Val::I64(argv as i64)], &mut out) {
         Ok(()) => eprintln!("[host] main returned {:?}", out[0]),
         Err(_) if host::take_unwind() => {

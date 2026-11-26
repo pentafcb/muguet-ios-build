@@ -59,7 +59,7 @@ An open-source native Mach-O ARM64 port of Grand Theft Auto V for iOS, iPadOS, a
 
 ### 9. Graphics Safeguards & Black Screen Recovery
 - **Automatic Profile Sanitization**: Automatically normalizes GTA V's internal `settings.xml` on launch to prevent invalid shader permutations (`ShaderQuality=1`), disabling memory-heavy MSAA/TXAA and incompatible tessellation.
-- **One-Tap Black Screen Fix**: If in-game graphics were previously changed to Max/Ultra causing a black screen on subsequent launches, tap **"Khôi phục đồ họa gốc (Sửa lỗi màn hình đen)"** in the Launcher (or pause menu), or simply delete `saves/userdata/Documents/Rockstar Games/GTA V/settings.xml` in the Files app. No need to re-copy game data!
+- **One-Tap Black Screen Fix**: If in-game graphics were previously changed to Max/Ultra causing a black screen on subsequent launches, tap **"Restore original graphics (Fix black screen)"** in the Launcher (or pause menu), or simply delete `saves/userdata/Documents/Rockstar Games/GTA V/settings.xml` in the Files app. No need to re-copy game data!
 
 ---
 
@@ -102,7 +102,7 @@ Muguet is an open-source game engine reimplementation and does **not** contain a
 
 ### Method 1: Direct Folder Copy via Files App (Fastest & Recommended)
 1. Extract your `game.zip` asset package on your computer or directly on your device.
-2. Open the iOS **Files** app (`Tệp`) and navigate to **On My iPhone / iPad > Muguet** (`muguet`).
+2. Open the iOS **Files** app (Files) and navigate to **On My iPhone / iPad > GTA V** (`muguet`).
 3. Create a new folder named **`game`** (all lowercase).
 4. Copy and paste the extracted **`data`** and **`b`** folders inside the **`game`** folder (`.../Muguet/game/data` and `.../Muguet/game/b`).
 5. Open Muguet — the game will detect the assets instantly and launch without waiting for in-app decompression.

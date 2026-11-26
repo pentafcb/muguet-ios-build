@@ -960,7 +960,7 @@ struct ShopBlip {
 }
 
 const WORLD_SHOPS: &[ShopBlip] = &[
-    // Ammu-Nation (Vũ khí / Súng đạn)
+    // Ammu-Nation (Weapons / Ammo)
     ShopBlip { pos: [16.9, -1107.8, 29.8], sprite: 110, colour: 2 },
     ShopBlip { pos: [253.9, -50.0, 69.9], sprite: 110, colour: 2 },
     ShopBlip { pos: [-1305.4, -393.4, 36.7], sprite: 110, colour: 2 },
@@ -972,38 +972,38 @@ const WORLD_SHOPS: &[ShopBlip] = &[
     ShopBlip { pos: [-3171.5, 1087.9, 20.8], sprite: 110, colour: 2 },
     ShopBlip { pos: [252.3, 259.7, 105.7], sprite: 110, colour: 2 },
 
-    // Los Santos Customs (Sửa xe / Độ xe)
+    // Los Santos Customs (Car repair / Mods)
     ShopBlip { pos: [-1155.5, -2005.4, 13.2], sprite: 72, colour: 0 },
     ShopBlip { pos: [-365.1, -131.8, 38.7], sprite: 72, colour: 0 },
     ShopBlip { pos: [731.8, -1088.8, 22.2], sprite: 72, colour: 0 },
     ShopBlip { pos: [1175.0, 2640.0, 37.8], sprite: 72, colour: 0 },
     ShopBlip { pos: [108.8, 6626.3, 31.8], sprite: 72, colour: 0 },
 
-    // Bệnh viện (Hospitals)
+    // Hospital
     ShopBlip { pos: [340.5, -1396.8, 32.5], sprite: 61, colour: 1 },
     ShopBlip { pos: [-449.6, -340.8, 34.5], sprite: 61, colour: 1 },
     ShopBlip { pos: [1839.2, 3672.9, 34.3], sprite: 61, colour: 1 },
 
-    // Đồn Cảnh Sát (Police)
+    // Police Station
     ShopBlip { pos: [426.0, -981.8, 30.7], sprite: 60, colour: 38 },
     ShopBlip { pos: [638.5, 1.5, 44.7], sprite: 60, colour: 38 },
     ShopBlip { pos: [1848.7, 3689.9, 34.3], sprite: 60, colour: 38 },
     ShopBlip { pos: [-442.2, 6012.3, 31.7], sprite: 60, colour: 38 },
 
-    // Cửa hàng Quần Áo (Clothes)
+    // Clothing Store
     ShopBlip { pos: [125.8, -223.8, 54.6], sprite: 73, colour: 0 },
     ShopBlip { pos: [-709.8, -153.1, 37.4], sprite: 73, colour: 0 },
     ShopBlip { pos: [-1192.8, -768.4, 17.3], sprite: 73, colour: 0 },
     ShopBlip { pos: [75.3, -1392.7, 29.4], sprite: 73, colour: 0 },
     ShopBlip { pos: [1693.8, 3760.1, 34.7], sprite: 73, colour: 0 },
 
-    // Tiệm Cắt Tóc (Barber)
+    // Barber Shop
     ShopBlip { pos: [-32.9, -152.3, 57.1], sprite: 71, colour: 0 },
     ShopBlip { pos: [-814.3, -183.8, 37.6], sprite: 71, colour: 0 },
     ShopBlip { pos: [136.8, -1708.4, 29.3], sprite: 71, colour: 0 },
     ShopBlip { pos: [1931.5, 3729.7, 32.8], sprite: 71, colour: 0 },
 
-    // Cửa Hàng Tiện Lợi 24/7 (Stores)
+    // 24/7 Convenience Store
     ShopBlip { pos: [373.9, 325.8, 103.6], sprite: 52, colour: 2 },
     ShopBlip { pos: [-48.5, -1757.5, 29.4], sprite: 52, colour: 2 },
     ShopBlip { pos: [-707.5, -914.3, 19.2], sprite: 52, colour: 2 },

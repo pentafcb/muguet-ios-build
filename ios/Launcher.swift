@@ -377,41 +377,41 @@ struct CheatItem: Identifiable {
 }
 
 let CHEAT_LIST: [CheatItem] = [
-    CheatItem(code: "PAINKILLER", name: "Bất tử 5 phút", desc: "Không nhận sát thương trong 5 phút", category: "Nhân vật"),
-    CheatItem(code: "TURTLE", name: "Đầy Máu & Giáp", desc: "Hồi phục 100% máu, giáp và sửa xe", category: "Nhân vật"),
-    CheatItem(code: "TOOLUP", name: "Tất cả Vũ khí", desc: "Nhận full tất cả vũ khí và đạn", category: "Nhân vật"),
-    CheatItem(code: "LAWYERUP", name: "Xóa sao cảnh sát", desc: "Giảm mức độ truy nã về 0", category: "Nhân vật"),
-    CheatItem(code: "FUGITIVE", name: "Tăng 1 sao cảnh sát", desc: "Tăng thêm 1 cấp độ truy nã", category: "Nhân vật"),
-    CheatItem(code: "POWERUP", name: "Đầy kỹ năng", desc: "Nạp đầy thanh kỹ năng nhân vật", category: "Nhân vật"),
-    CheatItem(code: "CATCHME", name: "Chạy siêu nhanh", desc: "Tăng tốc độ di chuyển tối đa", category: "Nhân vật"),
-    CheatItem(code: "GOTGILLS", name: "Bơi siêu nhanh", desc: "Tăng tốc độ bơi dưới nước", category: "Nhân vật"),
-    CheatItem(code: "HOPTOIT", name: "Siêu nhảy", desc: "Nhảy cao gấp 10 lần bình thường", category: "Nhân vật"),
-    CheatItem(code: "SKYDIVE", name: "Trang bị Dù nhảy", desc: "Nhận dù để nhảy từ trên cao", category: "Nhân vật"),
-    CheatItem(code: "LIQUOR", name: "Chế độ say rượu", desc: "Đi đứng lảo đảo hiệu ứng say xỉn", category: "Nhân vật"),
+    CheatItem(code: "PAINKILLER", name: "Invincible for 5 minutes", desc: "Take no damage for 5 minutes", category: "Character"),
+    CheatItem(code: "TURTLE", name: "Full Health & Armor", desc: "Restore 100% health and armor, and repair your vehicle", category: "Character"),
+    CheatItem(code: "TOOLUP", name: "All Weapons", desc: "Get every weapon with full ammo", category: "Character"),
+    CheatItem(code: "LAWYERUP", name: "Clear Wanted Level", desc: "Drop your wanted level to 0", category: "Character"),
+    CheatItem(code: "FUGITIVE", name: "Add 1 Wanted Star", desc: "Raise your wanted level by 1", category: "Character"),
+    CheatItem(code: "POWERUP", name: "Full Special Ability", desc: "Fully refill your character's special ability bar", category: "Character"),
+    CheatItem(code: "CATCHME", name: "Super Fast Run", desc: "Max out your movement speed", category: "Character"),
+    CheatItem(code: "GOTGILLS", name: "Super Fast Swim", desc: "Max out your underwater swim speed", category: "Character"),
+    CheatItem(code: "HOPTOIT", name: "Super Jump", desc: "Jump 10x higher than normal", category: "Character"),
+    CheatItem(code: "SKYDIVE", name: "Parachute Equipped", desc: "Get a parachute to jump from high up", category: "Character"),
+    CheatItem(code: "LIQUOR", name: "Drunk Mode", desc: "Stagger around with a drunk effect", category: "Character"),
 
-    CheatItem(code: "BUZZOFF", name: "Trực thăng Buzzard", desc: "Trực thăng chiến đấu có súng & tên lửa", category: "Phương tiện"),
-    CheatItem(code: "COMET", name: "Xe thể thao Comet", desc: "Xe Porsche 2 cửa siêu tốc", category: "Phương tiện"),
-    CheatItem(code: "RAPIDGT", name: "Xe đua Rapid GT", desc: "Xe thể thao cao cấp", category: "Phương tiện"),
-    CheatItem(code: "ROCKET", name: "Mô tô đua PCJ-600", desc: "Xe máy phân khối lớn tốc độ cao", category: "Phương tiện"),
-    CheatItem(code: "OFFROAD", name: "Xe cào cào Sanchez", desc: "Mô tô địa hình vượt đồi núi", category: "Phương tiện"),
-    CheatItem(code: "BANDIT", name: "Xe đạp BMX", desc: "Xe đạp biểu diễn nhào lộn", category: "Phương tiện"),
-    CheatItem(code: "BARNSTORM", name: "Máy bay Stunt Plane", desc: "Máy bay nhào lộn cánh quạt", category: "Phương tiện"),
-    CheatItem(code: "VINEWOOD", name: "Xe Limousine", desc: "Xe sang trọng kéo dài", category: "Phương tiện"),
-    CheatItem(code: "TRASHED", name: "Xe rác Trashmaster", desc: "Xe chở rác bọc thép húc xe khác", category: "Phương tiện"),
-    CheatItem(code: "DEATHCAR", name: "Xe bọc thép Duke O'Death", desc: "Xe cơ bắp chống đạn chống nổ cực mạnh", category: "Phương tiện"),
-    CheatItem(code: "BUBBLES", name: "Tàu ngầm Kraken", desc: "Tàu lặn khám phá đáy đại dương", category: "Phương tiện"),
-    CheatItem(code: "FLYSPRAY", name: "Máy bay Duster", desc: "Máy bay cánh quạt cổ điển", category: "Phương tiện"),
+    CheatItem(code: "BUZZOFF", name: "Buzzard Helicopter", desc: "Attack helicopter with guns & missiles", category: "Vehicles"),
+    CheatItem(code: "COMET", name: "Comet Sports Car", desc: "Super-fast 2-door Porsche", category: "Vehicles"),
+    CheatItem(code: "RAPIDGT", name: "Rapid GT Race Car", desc: "High-end sports car", category: "Vehicles"),
+    CheatItem(code: "ROCKET", name: "PCJ-600 Race Bike", desc: "High-speed big-engine motorcycle", category: "Vehicles"),
+    CheatItem(code: "OFFROAD", name: "Sanchez Dirt Bike", desc: "Off-road bike for hills and rough terrain", category: "Vehicles"),
+    CheatItem(code: "BANDIT", name: "BMX Bike", desc: "Stunt bike for tricks", category: "Vehicles"),
+    CheatItem(code: "BARNSTORM", name: "Stunt Plane", desc: "Propeller stunt plane", category: "Vehicles"),
+    CheatItem(code: "VINEWOOD", name: "Limousine", desc: "Long luxury car", category: "Vehicles"),
+    CheatItem(code: "TRASHED", name: "Trashmaster Garbage Truck", desc: "Armored garbage truck that rams other cars", category: "Vehicles"),
+    CheatItem(code: "DEATHCAR", name: "Duke O'Death Armored Car", desc: "Bulletproof, explosion-proof muscle car", category: "Vehicles"),
+    CheatItem(code: "BUBBLES", name: "Kraken Submarine", desc: "Submersible for exploring the ocean floor", category: "Vehicles"),
+    CheatItem(code: "FLYSPRAY", name: "Duster Plane", desc: "Classic propeller plane", category: "Vehicles"),
 
-    CheatItem(code: "HOTHANDS", name: "Nắm đấm phát nổ", desc: "Đấm kẻ địch văng xa và phát nổ", category: "Chiến đấu"),
-    CheatItem(code: "INCENDIARY", name: "Đạn lửa", desc: "Bắn ra đạn thiêu đốt mục tiêu", category: "Chiến đấu"),
-    CheatItem(code: "HIGHEX", name: "Đạn nổ", desc: "Mỗi phát bắn tạo ra vụ nổ lớn", category: "Chiến đấu"),
-    CheatItem(code: "DEADEYE", name: "Làm chậm khi ngắm", desc: "Làm chậm thời gian khi giữ nút ngắm", category: "Chiến đấu"),
+    CheatItem(code: "HOTHANDS", name: "Exploding Punches", desc: "Punch enemies flying and make them explode", category: "Combat"),
+    CheatItem(code: "INCENDIARY", name: "Fire Bullets", desc: "Fire bullets that set targets ablaze", category: "Combat"),
+    CheatItem(code: "HIGHEX", name: "Exploding Bullets", desc: "Every shot causes a big explosion", category: "Combat"),
+    CheatItem(code: "DEADEYE", name: "Slow-Mo Aim", desc: "Slow down time while holding the aim button", category: "Combat"),
 
-    CheatItem(code: "SKYFALL", name: "Rơi tự do từ trời", desc: "Thả nhân vật từ trên chín tầng mây", category: "Thế giới"),
-    CheatItem(code: "SLOWMO", name: "Làm chậm toàn game", desc: "Hiệu ứng slow-motion điện ảnh", category: "Thế giới"),
-    CheatItem(code: "FLOATER", name: "Trọng lực Mặt Trăng", desc: "Xe và người bay lơ lửng nhẹ", category: "Thế giới"),
-    CheatItem(code: "MAKEITRAIN", name: "Đổi thời tiết", desc: "Thay đổi nắng, mưa, bão sấm chớp", category: "Thế giới"),
-    CheatItem(code: "SNOW", name: "Tuyết rơi", desc: "Kích hoạt hiệu ứng tuyết rơi toàn map", category: "Thế giới")
+    CheatItem(code: "SKYFALL", name: "Freefall From the Sky", desc: "Drop your character from high in the clouds", category: "World"),
+    CheatItem(code: "SLOWMO", name: "Slow Down the Game", desc: "Cinematic slow-motion effect", category: "World"),
+    CheatItem(code: "FLOATER", name: "Moon Gravity", desc: "Cars and people float around lightly", category: "World"),
+    CheatItem(code: "MAKEITRAIN", name: "Change Weather", desc: "Change sun, rain, thunderstorms", category: "World"),
+    CheatItem(code: "SNOW", name: "Snowfall", desc: "Turn on snowfall across the whole map", category: "World")
 ]
 
 struct CheatMenuView: View {
@@ -423,12 +423,12 @@ struct CheatMenuView: View {
     var body: some View {
         NavigationView {
             List {
-                Section(header: Text("Nhập lệnh tùy chỉnh")) {
+                Section(header: Text("Enter a custom code")) {
                     HStack {
-                        TextField("Nhập mã lệnh (vd: PAINKILLER)", text: $customCode)
+                        TextField("Enter a code (e.g. PAINKILLER)", text: $customCode)
                             .textInputAutocapitalization(.characters)
                             .autocorrectionDisabled()
-                        Button("Áp dụng") {
+                        Button("Apply") {
                             let c = customCode.trimmingCharacters(in: .whitespaces).uppercased()
                             guard !c.isEmpty else { return }
                             apply(c)
@@ -437,7 +437,7 @@ struct CheatMenuView: View {
                     }
                 }
 
-                ForEach(["Nhân vật", "Phương tiện", "Chiến đấu", "Thế giới"], id: \.self) { cat in
+                ForEach(["Character", "Vehicles", "Combat", "World"], id: \.self) { cat in
                     Section(header: Text(cat)) {
                         ForEach(CHEAT_LIST.filter { $0.category == cat }) { item in
                             HStack {
@@ -450,7 +450,7 @@ struct CheatMenuView: View {
                                 }
                                 Spacer()
                                 Button(action: { apply(item.code) }) {
-                                    Text("Bật").font(.caption.weight(.bold)).padding(.horizontal, 10).padding(.vertical, 4)
+                                    Text("On").font(.caption.weight(.bold)).padding(.horizontal, 10).padding(.vertical, 4)
                                 }
                                 .buttonStyle(.borderedProminent)
                                 .tint(.blue)
@@ -459,11 +459,11 @@ struct CheatMenuView: View {
                     }
                 }
             }
-            .navigationTitle("Lệnh Cheat GTA V")
+            .navigationTitle("GTA V Cheat Codes")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Đóng") { dismiss() }
+                    Button("Close") { dismiss() }
                 }
             }
             .overlay(alignment: .bottom) {
@@ -485,7 +485,7 @@ struct CheatMenuView: View {
 
     private func apply(_ code: String) {
         onApply(code)
-        withAnimation { toastMessage = "Đã gửi lệnh cheat: \(code)" }
+        withAnimation { toastMessage = "Cheat code sent: \(code)" }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
             dismiss()
         }
@@ -509,23 +509,23 @@ enum AnchorType {
 }
 
 let HUD_BUTTON_DEFS: [HUDButtonDef] = [
-    HUDButtonDef(id: 0, name: "FIRE (Bắn / Ga)", label: "FIRE", anchorType: .bottomRight, baseOffset: CGPoint(x: 62, y: 68), baseRadius: 44),
-    HUDButtonDef(id: 1, name: "AIM (Ngắm / Phanh)", label: "AIM", anchorType: .bottomRight, baseOffset: CGPoint(x: 158, y: 46), baseRadius: 31),
-    HUDButtonDef(id: 2, name: "JUMP (Nhảy / Phanh tay)", label: "JUMP", anchorType: .bottomRight, baseOffset: CGPoint(x: 58, y: 168), baseRadius: 28),
-    HUDButtonDef(id: 3, name: "ENTER (Lên/xuống xe)", label: "ENTER", anchorType: .bottomRight, baseOffset: CGPoint(x: 140, y: 132), baseRadius: 26),
-    HUDButtonDef(id: 4, name: "RELOAD (Nạp đạn / Còi)", label: "RELOAD", anchorType: .bottomRight, baseOffset: CGPoint(x: 222, y: 98), baseRadius: 24),
-    HUDButtonDef(id: 5, name: "WEAPON (Vũ khí)", label: "WEAPON", anchorType: .topRight, baseOffset: CGPoint(x: 30, y: 30), baseRadius: 22),
-    HUDButtonDef(id: 6, name: "COVER (Núp / Radio)", label: "COVER", anchorType: .topRight, baseOffset: CGPoint(x: 84, y: 30), baseRadius: 22),
-    HUDButtonDef(id: 7, name: "CROUCH (Ngồi / Nhìn sau)", label: "CROUCH", anchorType: .topRight, baseOffset: CGPoint(x: 138, y: 30), baseRadius: 22),
-    HUDButtonDef(id: 8, name: "CAM (Góc camera)", label: "CAM", anchorType: .topRight, baseOffset: CGPoint(x: 192, y: 30), baseRadius: 22),
+    HUDButtonDef(id: 0, name: "FIRE (Shoot / Gas)", label: "FIRE", anchorType: .bottomRight, baseOffset: CGPoint(x: 62, y: 68), baseRadius: 44),
+    HUDButtonDef(id: 1, name: "AIM (Aim / Brake)", label: "AIM", anchorType: .bottomRight, baseOffset: CGPoint(x: 158, y: 46), baseRadius: 31),
+    HUDButtonDef(id: 2, name: "JUMP (Jump / Handbrake)", label: "JUMP", anchorType: .bottomRight, baseOffset: CGPoint(x: 58, y: 168), baseRadius: 28),
+    HUDButtonDef(id: 3, name: "ENTER (Enter/Exit vehicle)", label: "ENTER", anchorType: .bottomRight, baseOffset: CGPoint(x: 140, y: 132), baseRadius: 26),
+    HUDButtonDef(id: 4, name: "RELOAD (Reload / Horn)", label: "RELOAD", anchorType: .bottomRight, baseOffset: CGPoint(x: 222, y: 98), baseRadius: 24),
+    HUDButtonDef(id: 5, name: "WEAPON (Weapons)", label: "WEAPON", anchorType: .topRight, baseOffset: CGPoint(x: 30, y: 30), baseRadius: 22),
+    HUDButtonDef(id: 6, name: "COVER (Take cover / Radio)", label: "COVER", anchorType: .topRight, baseOffset: CGPoint(x: 84, y: 30), baseRadius: 22),
+    HUDButtonDef(id: 7, name: "CROUCH (Crouch / Look behind)", label: "CROUCH", anchorType: .topRight, baseOffset: CGPoint(x: 138, y: 30), baseRadius: 22),
+    HUDButtonDef(id: 8, name: "CAM (Camera angle)", label: "CAM", anchorType: .topRight, baseOffset: CGPoint(x: 192, y: 30), baseRadius: 22),
     HUDButtonDef(id: 9, name: "MENU (GTA V Menu)", label: "MENU", anchorType: .topRight, baseOffset: CGPoint(x: 246, y: 30), baseRadius: 22),
-    HUDButtonDef(id: 10, name: "PAUSE (Tạm dừng)", label: "PAUSE", anchorType: .topLeft, baseOffset: CGPoint(x: 30, y: 30), baseRadius: 22),
-    HUDButtonDef(id: 11, name: "PHONE (Điện thoại)", label: "PHONE", anchorType: .topLeft, baseOffset: CGPoint(x: 84, y: 30), baseRadius: 22),
-    HUDButtonDef(id: 12, name: "MENU KEYS (Phím mũi tên)", label: "MENU\nKEYS", anchorType: .topLeft, baseOffset: CGPoint(x: 138, y: 30), baseRadius: 22),
-    HUDButtonDef(id: 13, name: "SWITCH (Đổi nhân vật)", label: "SWITCH", anchorType: .topLeft, baseOffset: CGPoint(x: 192, y: 30), baseRadius: 22),
-    HUDButtonDef(id: 14, name: "1ST POV (Góc nhìn thứ 1)", label: "1ST\nPOV", anchorType: .topLeft, baseOffset: CGPoint(x: 246, y: 30), baseRadius: 22),
-    HUDButtonDef(id: 15, name: "FIRE phụ (Bắn trái)", label: "FIRE", anchorType: .topLeft, baseOffset: CGPoint(x: 45, y: 112), baseRadius: 29),
-    HUDButtonDef(id: 16, name: "JOYSTICK (Cần di chuyển)", label: "", anchorType: .stick, baseOffset: CGPoint(x: 0, y: 0), baseRadius: 58)
+    HUDButtonDef(id: 10, name: "PAUSE (Pause)", label: "PAUSE", anchorType: .topLeft, baseOffset: CGPoint(x: 30, y: 30), baseRadius: 22),
+    HUDButtonDef(id: 11, name: "PHONE (Phone)", label: "PHONE", anchorType: .topLeft, baseOffset: CGPoint(x: 84, y: 30), baseRadius: 22),
+    HUDButtonDef(id: 12, name: "MENU KEYS (Arrow keys)", label: "MENU\nKEYS", anchorType: .topLeft, baseOffset: CGPoint(x: 138, y: 30), baseRadius: 22),
+    HUDButtonDef(id: 13, name: "SWITCH (Switch character)", label: "SWITCH", anchorType: .topLeft, baseOffset: CGPoint(x: 192, y: 30), baseRadius: 22),
+    HUDButtonDef(id: 14, name: "1ST POV (First-person view)", label: "1ST\nPOV", anchorType: .topLeft, baseOffset: CGPoint(x: 246, y: 30), baseRadius: 22),
+    HUDButtonDef(id: 15, name: "Extra FIRE (Shoot left)", label: "FIRE", anchorType: .topLeft, baseOffset: CGPoint(x: 45, y: 112), baseRadius: 29),
+    HUDButtonDef(id: 16, name: "JOYSTICK (Move stick)", label: "", anchorType: .stick, baseOffset: CGPoint(x: 0, y: 0), baseRadius: 58)
 ]
 
 struct HUDEditorView: View {
@@ -637,7 +637,7 @@ struct HUDEditorView: View {
 
     private func editorToolbar(geo: GeometryProxy, isTop: Bool) -> some View {
         HStack(spacing: 10) {
-            Button("Hủy") {
+            Button("Cancel") {
                 dismiss()
             }
             .buttonStyle(.bordered)
@@ -649,7 +649,7 @@ struct HUDEditorView: View {
             }) {
                 HStack(spacing: 4) {
                     Image(systemName: isTop ? "arrow.down.to.line" : "arrow.up.to.line")
-                    Text(isTop ? "Xuống dưới" : "Lên trên")
+                    Text(isTop ? "Move down" : "Move up")
                 }
                 .font(.caption.bold())
             }
@@ -669,24 +669,24 @@ struct HUDEditorView: View {
             }) {
                 HStack(spacing: 4) {
                     Image(systemName: "arrow.down.right.and.arrow.up.left")
-                    Text("Thu gọn")
+                    Text("Collapse")
                 }
                 .font(.caption.bold())
             }
             .buttonStyle(.bordered)
             .tint(.orange)
 
-            Button("Đặt lại tất cả") {
+            Button("Reset all") {
                 for i in 0..<17 {
                     offsets[i] = .zero
                     scales[i] = 1.0
                 }
-                showToast("Đã đưa toàn bộ nút về mặc định")
+                showToast("All buttons reset to default")
             }
             .buttonStyle(.bordered)
             .tint(.red)
 
-            Button("Lưu & Áp dụng") {
+            Button("Save & Apply") {
                 saveLayout()
                 dismiss()
             }
@@ -702,7 +702,7 @@ struct HUDEditorView: View {
 
     private func collapsedBar(geo: GeometryProxy, isTop: Bool) -> some View {
         HStack(spacing: 12) {
-            Button("Hủy") { dismiss() }
+            Button("Cancel") { dismiss() }
                 .buttonStyle(.bordered)
                 .tint(.secondary)
 
@@ -711,7 +711,7 @@ struct HUDEditorView: View {
             Button(action: { isCollapsed = false }) {
                 HStack(spacing: 6) {
                     Image(systemName: "slider.horizontal.3")
-                    Text("Hiện bảng HUD Editor")
+                    Text("Show HUD Editor panel")
                 }
                 .font(.caption.bold())
                 .padding(.horizontal, 8)
@@ -722,7 +722,7 @@ struct HUDEditorView: View {
 
             Spacer()
 
-            Button("Lưu & Áp dụng") {
+            Button("Save & Apply") {
                 saveLayout()
                 dismiss()
             }
@@ -768,7 +768,7 @@ struct HUDEditorView: View {
 
             // Scale slider & buttons
             HStack(spacing: 6) {
-                Text("Cỡ:")
+                Text("Size:")
                     .font(.caption)
                     .foregroundColor(.secondary)
 
@@ -797,7 +797,7 @@ struct HUDEditorView: View {
 
             // D-Pad nudge arrows
             HStack(spacing: 3) {
-                Text("Dời:")
+                Text("Move:")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 Button(action: { nudge(dx: -4, dy: 0) }) {
@@ -817,10 +817,10 @@ struct HUDEditorView: View {
 
             Divider().frame(height: 20)
 
-            Button("Đặt lại nút") {
+            Button("Reset button") {
                 offsets[selectedId] = .zero
                 scales[selectedId] = 1.0
-                showToast("Đã đặt lại \(currentDef.name)")
+                showToast("Reset \(currentDef.name)")
             }
             .font(.caption)
             .buttonStyle(.bordered)
@@ -1048,14 +1048,14 @@ struct LauncherView: View {
                     importView
                 } else if isOverlay {
                     Button(action: resumeAndSave) {
-                        Text("Tiếp tục (Resume)").font(.title3.weight(.semibold)).frame(maxWidth: 220)
+                        Text("Continue (Resume)").font(.title3.weight(.semibold)).frame(maxWidth: 220)
                     }
                     .controlSize(.large)
                     .buttonStyle(.borderedProminent)
                     .tint(.green)
 
                     Button(action: { suspendApp() }) {
-                        Text("Thoát hẳn ứng dụng (Exit)").font(.callout.weight(.medium)).frame(maxWidth: 220)
+                        Text("Quit the app (Exit)").font(.callout.weight(.medium)).frame(maxWidth: 220)
                     }
                     .controlSize(.regular)
                     .buttonStyle(.bordered)
@@ -1071,35 +1071,35 @@ struct LauncherView: View {
             .padding(24)
             .frame(maxWidth: .infinity)
             Form {
-                Section("Tên nhân vật / Người chơi") {
+                Section("Character name / Player") {
                     HStack {
                         Image(systemName: "person.crop.circle.fill")
                             .foregroundStyle(.blue)
-                        TextField("Nhập tên nhân vật...", text: $s.name)
+                        TextField("Enter a character name...", text: $s.name)
                             .textInputAutocapitalization(.words)
                             .autocorrectionDisabled()
                     }
-                    Text("Tên này sẽ hiển thị trên đầu nhân vật của bạn khi chơi cùng bạn bè.")
+                    Text("This name will show above your character's head when you play with friends.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
 
                 if !s.multiplayer {
                     Picker("Mode", selection: $s.mode) {
-                        Text("Story Mode (Cốt truyện)").tag(1)
-                        Text("Sandbox (Tự do)").tag(2)
+                        Text("Story Mode").tag(1)
+                        Text("Sandbox (Free Roam)").tag(2)
                     }
                 }
 
-                Section("Cấu hình Đồ họa & Kích hoạt 120 FPS") {
+                Section("Graphics Settings & Enable 120 FPS") {
                     HStack(spacing: 10) {
                         Button(action: {
                             s.apply120FpsBoost()
-                            resetAlertMessage = "Đã kích hoạt cấu hình 120 FPS Siêu Mượt!"
+                            resetAlertMessage = "120 FPS Super Smooth setup enabled!"
                             showingResetAlert = true
                         }) {
                             HStack(spacing: 4) {
                                 Image(systemName: "bolt.fill")
-                                Text("120 FPS Siêu Mượt").bold()
+                                Text("120 FPS Super Smooth").bold()
                             }
                             .font(.subheadline)
                             .frame(maxWidth: .infinity)
@@ -1110,12 +1110,12 @@ struct LauncherView: View {
 
                         Button(action: {
                             s.applyLowRamMode()
-                            resetAlertMessage = "Đã kích hoạt Cấu hình Siêu Tiết Kiệm RAM (~800MB)!"
+                            resetAlertMessage = "Super RAM Saver setup enabled (~800MB)!"
                             showingResetAlert = true
                         }) {
                             HStack(spacing: 4) {
                                 Image(systemName: "leaf.fill")
-                                Text("Tiết Kiệm RAM").bold()
+                                Text("Save RAM").bold()
                             }
                             .font(.subheadline)
                             .frame(maxWidth: .infinity)
@@ -1126,32 +1126,32 @@ struct LauncherView: View {
                     }
                     .padding(.vertical, 2)
 
-                    Picker("Tốc độ khung hình (Frame Limit)", selection: $s.fps) {
-                        Text("30 fps (Tiết kiệm pin)").tag(30)
-                        Text("60 fps (Mặc định)").tag(60)
-                        Text("120 fps (Mở khóa 120 FPS / ProMotion)").tag(120)
+                    Picker("Frame rate (Frame Limit)", selection: $s.fps) {
+                        Text("30 fps (Save battery)").tag(30)
+                        Text("60 fps (Default)").tag(60)
+                        Text("120 fps (Unlock 120 FPS / ProMotion)").tag(120)
                     }
 
-                    Picker("Độ phân giải (Resolution)", selection: $s.scale) {
-                        Text("35 % (Siêu nhẹ)").tag(0.35)
-                        Text("50 % (Khuyên dùng cho 120 FPS)").tag(0.5)
-                        Text("65 % (Cân bằng)").tag(0.65)
-                        Text("75 % (Rõ nét)").tag(0.75)
-                        Text("100 % (Độ phân giải gốc)").tag(1.0)
+                    Picker("Resolution", selection: $s.scale) {
+                        Text("35% (Super light)").tag(0.35)
+                        Text("50% (Recommended for 120 FPS)").tag(0.5)
+                        Text("65% (Balanced)").tag(0.65)
+                        Text("75% (Sharp)").tag(0.75)
+                        Text("100% (Native resolution)").tag(1.0)
                     }
 
-                    Picker("Chất lượng Textures", selection: $s.textures) {
-                        Text("Bình thường / Thấp (Ít tốn RAM)").tag(0)
+                    Picker("Texture Quality", selection: $s.textures) {
+                        Text("Normal / Low (Uses less RAM)").tag(0)
                         Text("Cao").tag(1)
-                        Text("Rất cao").tag(2)
+                        Text("Very High").tag(2)
                     }
 
-                    Toggle("Khóa nhịp ProMotion V-Sync 120Hz (CADisplayLink)", isOn: $s.promotionSync)
-                    Text("Đồng bộ chính xác với tần số quét 60Hz/120Hz của màn hình iPhone/iPad để triệt tiêu khựng hình và giữ khung hình 120 FPS mượt nhất.")
+                    Toggle("Lock ProMotion V-Sync 120Hz pacing (CADisplayLink)", isOn: $s.promotionSync)
+                    Text("Syncs precisely with your iPhone/iPad screen's 60Hz/120Hz refresh rate to remove stutter and keep 120 FPS as smooth as possible.")
                         .font(.caption).foregroundStyle(.secondary)
 
-                    Toggle("Tối ưu đồ họa sâu (Deep Optimization 60-120 FPS Boost)", isOn: $s.deepOptimization)
-                    Text("Tự động khống chế bóng đổ, cỏ rậm và khử răng cưa trong GTA V settings.xml để duy trì FPS tối đa khi máy nóng.")
+                    Toggle("Deep graphics optimization (Deep Optimization 60-120 FPS Boost)", isOn: $s.deepOptimization)
+                    Text("Automatically limits shadows, dense grass, and anti-aliasing in GTA V settings.xml to hold max FPS when the device heats up.")
                         .font(.caption).foregroundStyle(.secondary)
 
                     Button(action: {
@@ -1175,10 +1175,10 @@ struct LauncherView: View {
                         s.promotionSync = true
                         try? s.save()
                         muguet_reload_settings()
-                        resetAlertMessage = "Đã khôi phục cài đặt đồ họa Rockstar GTA V về mặc định an toàn (Shader High, MSAA Tắt, Bóng Normal, 120 FPS). Lỗi màn hình đen do Max Setting đã được xử lý triệt để!"
+                        resetAlertMessage = "Restored Rockstar GTA V graphics to safe defaults (Shader High, MSAA Off, Shadows Normal, 120 FPS). The black screen caused by Max Settings is fully fixed!"
                         showingResetAlert = true
                     }) {
-                        Label("Khôi phục đồ họa gốc (Sửa lỗi màn hình đen)", systemImage: "arrow.counterclockwise.circle.fill")
+                        Label("Restore original graphics (Fix black screen)", systemImage: "arrow.counterclockwise.circle.fill")
                             .font(.subheadline.bold())
                             .frame(maxWidth: .infinity)
                     }
@@ -1186,90 +1186,90 @@ struct LauncherView: View {
                     .tint(.red)
                 }
 
-                Section("🎮 Cài đặt Đồ họa GTA V Chi tiết (In-Game Graphics)") {
-                    Text("Thiết lập trực tiếp các thông số đồ họa của GTA V ngay tại đây mà không cần chỉnh trong game.")
+                Section("🎮 Detailed GTA V Graphics Settings (In-Game Graphics)") {
+                    Text("Set GTA V graphics options right here without changing them in-game.")
                         .font(.caption).foregroundStyle(.secondary)
 
-                    Picker("Chất lượng Đổ bóng (Shadows)", selection: $s.shadowQuality) {
-                        Text("Bình thường (Mượt nhất)").tag(1)
+                    Picker("Shadow Quality", selection: $s.shadowQuality) {
+                        Text("Normal (Smoothest)").tag(1)
                         Text("Cao").tag(2)
-                        Text("Rất cao").tag(3)
+                        Text("Very High").tag(3)
                     }
 
-                    Picker("Khoảng cách Đổ bóng (Shadow Distance)", selection: $s.shadowDistance) {
-                        Text("Ngắn (0.5× - Tiết kiệm RAM)").tag(0.5)
-                        Text("Tiêu chuẩn (1.0×)").tag(1.0)
+                    Picker("Shadow Distance", selection: $s.shadowDistance) {
+                        Text("Short (0.5× - Save RAM)").tag(0.5)
+                        Text("Standard (1.0×)").tag(1.0)
                         Text("Xa (1.5×)").tag(1.5)
                     }
 
-                    Picker("Chất lượng Phản chiếu (Reflections)", selection: $s.reflectionQuality) {
-                        Text("Bình thường").tag(1)
+                    Picker("Reflection Quality", selection: $s.reflectionQuality) {
+                        Text("Normal").tag(1)
                         Text("Cao").tag(2)
-                        Text("Rất cao").tag(3)
+                        Text("Very High").tag(3)
                     }
 
-                    Picker("Chất lượng Cỏ cây & Thảo mộc (Grass)", selection: $s.grassQuality) {
-                        Text("Bình thường (Chống tụt FPS đồi núi)").tag(0)
+                    Picker("Grass & Vegetation Quality", selection: $s.grassQuality) {
+                        Text("Normal (Prevents FPS drops in hills)").tag(0)
                         Text("Cao").tag(1)
-                        Text("Rất cao").tag(2)
+                        Text("Very High").tag(2)
                     }
 
-                    Picker("Chất lượng Mặt nước (Water)", selection: $s.waterQuality) {
-                        Text("Bình thường").tag(0)
+                    Picker("Water Quality", selection: $s.waterQuality) {
+                        Text("Normal").tag(0)
                         Text("Cao").tag(1)
-                        Text("Rất cao").tag(2)
+                        Text("Very High").tag(2)
                     }
 
-                    Picker("Chất lượng Hạt & Hiệu ứng cháy nổ (Particles)", selection: $s.particleQuality) {
-                        Text("Bình thường").tag(0)
+                    Picker("Particle & Explosion Effect Quality", selection: $s.particleQuality) {
+                        Text("Normal").tag(0)
                         Text("Cao").tag(1)
-                        Text("Rất cao").tag(2)
+                        Text("Very High").tag(2)
                     }
 
-                    Picker("Hậu kỳ & Ánh sáng (Post FX)", selection: $s.postFx) {
-                        Text("Bình thường (Tối ưu FPS)").tag(0)
-                        Text("Cao (Bloom & Tia nắng)").tag(1)
-                        Text("Rất cao").tag(2)
+                    Picker("Post FX & Lighting", selection: $s.postFx) {
+                        Text("Normal (Best FPS)").tag(0)
+                        Text("High (Bloom & Sun rays)").tag(1)
+                        Text("Very High").tag(2)
                     }
 
-                    Picker("Lọc vân bề mặt (Anisotropic Filtering)", selection: $s.anisotropicFiltering) {
-                        Text("Tắt (x0)").tag(0)
+                    Picker("Surface Detail Filtering (Anisotropic Filtering)", selection: $s.anisotropicFiltering) {
+                        Text("Off (x0)").tag(0)
                         Text("x4").tag(4)
                         Text("x8").tag(8)
-                        Text("x16 (Rõ nét mặt đường)").tag(16)
+                        Text("x16 (Sharp road detail)").tag(16)
                     }
 
-                    Toggle("Khử răng cưa viền (FXAA)", isOn: $s.fxaa)
+                    Toggle("Edge anti-aliasing (FXAA)", isOn: $s.fxaa)
 
-                    Picker("Mật độ Xe cộ trên đường (Traffic)", selection: $s.cityDensity) {
-                        Text("Vắng vẻ (0% - Mượt nhất)").tag(0.0)
-                        Text("Vừa phải (50%)").tag(0.5)
-                        Text("Đông đúc (100% - Như PC)").tag(1.0)
+                    Picker("Traffic Density", selection: $s.cityDensity) {
+                        Text("Empty (0% - Smoothest)").tag(0.0)
+                        Text("Medium (50%)").tag(0.5)
+                        Text("Heavy (100% - Like PC)").tag(1.0)
                     }
 
-                    Picker("Mật độ & Đa dạng Người đi bộ (Pedestrians)", selection: $s.pedDensity) {
-                        Text("Thấp (0% - Tiết kiệm RAM)").tag(0.0)
-                        Text("Vừa phải (50%)").tag(0.5)
-                        Text("Đông đúc (100%)").tag(1.0)
+                    Picker("Pedestrian Density & Variety", selection: $s.pedDensity) {
+                        Text("Low (0% - Save RAM)").tag(0.0)
+                        Text("Medium (50%)").tag(0.5)
+                        Text("Heavy (100%)").tag(1.0)
                     }
 
-                    Picker("Tầm nhìn xa & Chi tiết vật thể (LOD Scale)", selection: $s.distanceScaling) {
-                        Text("Tiết kiệm RAM (-0.5)").tag(-0.5)
-                        Text("Tiêu chuẩn (0.0)").tag(0.0)
-                        Text("Tầm nhìn xa (+0.5)").tag(0.5)
+                    Picker("Draw Distance & Object Detail (LOD Scale)", selection: $s.distanceScaling) {
+                        Text("Save RAM (-0.5)").tag(-0.5)
+                        Text("Standard (0.0)").tag(0.0)
+                        Text("Far view (+0.5)").tag(0.5)
                     }
                 }
 
-                Section("Tùy chỉnh Giao diện Nút Bấm (Touch Controls)") {
+                Section("Customize Button Layout (Touch Controls)") {
                     Button(action: { showingHUDEditor = true }) {
-                        Label("Chỉnh vị trí & Kích thước nút trực quan (HUD Editor)", systemImage: "hand.draw.fill")
+                        Label("Adjust button position & size visually (HUD Editor)", systemImage: "hand.draw.fill")
                             .font(.subheadline.bold())
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(.blue)
 
-                    Button("Khôi phục mặc định nút bấm") {
+                    Button("Reset buttons to default") {
                         s.resetLayout()
                     }
                     .font(.caption)
@@ -1302,13 +1302,13 @@ struct LauncherView: View {
                 }
                 Toggle("Mute audio", isOn: $s.mute)
 
-                Section("Chơi Online (Multiplayer)") {
-                    Toggle("Bật chế độ Multiplayer", isOn: $s.multiplayer)
+                Section("Play Online (Multiplayer)") {
+                    Toggle("Enable Multiplayer mode", isOn: $s.multiplayer)
                     if s.multiplayer {
-                        Picker("Chế độ phòng", selection: $s.roomMode) {
-                            Text("Tạo phòng").tag("create")
-                            Text("Vào phòng").tag("join")
-                            Text("Công khai").tag("public")
+                        Picker("Room mode", selection: $s.roomMode) {
+                            Text("Create room").tag("create")
+                            Text("Join room").tag("join")
+                            Text("Public").tag("public")
                             Text("LAN Host").tag("lan")
                         }
                         .pickerStyle(.segmented)
@@ -1316,38 +1316,38 @@ struct LauncherView: View {
                         if s.roomMode == "create" {
                             VStack(alignment: .leading, spacing: 12) {
                                 VStack(alignment: .leading, spacing: 4) {
-                                    Text("1. Chọn Chế độ phòng:").font(.subheadline.bold())
+                                    Text("1. Pick a room mode:").font(.subheadline.bold())
                                     Picker("Mode", selection: $s.mode) {
-                                        Text("Story Mode (Cốt truyện)").tag(1)
-                                        Text("Sandbox (Tự do)").tag(2)
+                                        Text("Story Mode").tag(1)
+                                        Text("Sandbox (Free Roam)").tag(2)
                                     }
                                     .pickerStyle(.segmented)
                                 }
 
                                 VStack(alignment: .leading, spacing: 4) {
-                                    Text("2. Luật sát thương (PvP):").font(.subheadline.bold())
+                                    Text("2. Damage rules (PvP):").font(.subheadline.bold())
                                     Picker("PvP", selection: $s.pvp) {
-                                        Text("🛡️ Hòa bình (Co-op)").tag(false)
-                                        Text("⚔️ Đấu trường (PvP)").tag(true)
+                                        Text("🛡️ Peaceful (Co-op)").tag(false)
+                                        Text("⚔️ Arena (PvP)").tag(true)
                                     }
                                     .pickerStyle(.segmented)
-                                    Text(s.pvp ? "PvP Bật: Người chơi có thể bắn và tiêu diệt nhau." : "Hòa bình: Không gây sát thương lẫn nhau, tránh bắn nhau khi spawn.")
+                                    Text(s.pvp ? "PvP On: Players can shoot and kill each other." : "Peaceful: No damage to each other, no spawn killing.")
                                         .font(.caption2).foregroundStyle(.secondary)
                                 }
 
                                 VStack(alignment: .leading, spacing: 4) {
-                                    Text("3. Số người chơi tối đa (Server capacity):").font(.subheadline.bold())
-                                    Picker("Giới hạn người chơi", selection: $s.maxPlayers) {
-                                        Text("32 Người chơi").tag(32)
-                                        Text("64 Người chơi").tag(64)
+                                    Text("3. Max players (Server capacity):").font(.subheadline.bold())
+                                    Picker("Player limit", selection: $s.maxPlayers) {
+                                        Text("32 players").tag(32)
+                                        Text("64 players").tag(64)
                                     }
                                     .pickerStyle(.segmented)
-                                    Text("Tạo phòng hỗ trợ tối đa \(s.maxPlayers) người chơi trực tuyến cùng lúc.")
+                                    Text("Creating a room supports up to \(s.maxPlayers) players online at the same time.")
                                         .font(.caption2).foregroundStyle(.secondary)
                                 }
 
                                 VStack(alignment: .leading, spacing: 4) {
-                                    Text("4. Mã phòng chia sẻ cho bạn bè:").font(.subheadline.bold())
+                                    Text("4. Room code to share with friends:").font(.subheadline.bold())
                                     HStack(spacing: 8) {
                                         Text(s.formattedCreateCode)
                                             .font(.title2.monospaced().bold())
@@ -1370,14 +1370,14 @@ struct LauncherView: View {
                                                 .padding(.vertical, 7)
                                         }
                                         .buttonStyle(.bordered)
-                                        .help("Đổi mã")
+                                        .help("Change code")
 
                                         Button(action: {
                                             UIPasteboard.general.string = s.formattedCreateCode
                                         }) {
                                             HStack(spacing: 4) {
                                                 Image(systemName: "doc.on.doc")
-                                                Text("Chép")
+                                                Text("Copy")
                                             }
                                             .font(.caption.bold())
                                             .padding(.horizontal, 10)
@@ -1390,7 +1390,7 @@ struct LauncherView: View {
 
                                 HStack {
                                     Image(systemName: "lock.fill").foregroundStyle(.secondary)
-                                    TextField("Mật khẩu phòng (Tùy chọn)", text: $s.roomPass)
+                                    TextField("Room password (Optional)", text: $s.roomPass)
                                         .textInputAutocapitalization(.never)
                                         .autocorrectionDisabled()
                                 }
@@ -1400,11 +1400,11 @@ struct LauncherView: View {
                                         .font(.caption.bold())
                                         .foregroundStyle(s.mode == 1 ? .orange : .cyan)
                                     Text("•")
-                                    Label(s.pvp ? "PvP Bật" : "Hòa bình Co-op", systemImage: s.pvp ? "burst.fill" : "shield.fill")
+                                    Label(s.pvp ? "PvP On" : "Peaceful Co-op", systemImage: s.pvp ? "burst.fill" : "shield.fill")
                                         .font(.caption.bold())
                                         .foregroundStyle(s.pvp ? .red : .green)
                                     Text("•")
-                                    Label(s.roomPass.isEmpty ? "Phòng Mở" : "Có Pass", systemImage: s.roomPass.isEmpty ? "lock.open" : "lock")
+                                    Label(s.roomPass.isEmpty ? "Open Room" : "Has Password", systemImage: s.roomPass.isEmpty ? "lock.open" : "lock")
                                         .font(.caption.bold())
                                         .foregroundStyle(.secondary)
                                 }
@@ -1415,8 +1415,8 @@ struct LauncherView: View {
                         } else if s.roomMode == "join" {
                             VStack(alignment: .leading, spacing: 12) {
                                 VStack(alignment: .leading, spacing: 4) {
-                                    Text("Nhập mã phòng:").font(.subheadline.bold())
-                                    TextField("Ví dụ: SP-8621 hoặc BX-5520", text: $s.joinCode)
+                                    Text("Enter room code:").font(.subheadline.bold())
+                                    TextField("Example: SP-8621 or BX-5520", text: $s.joinCode)
                                         .font(.title3.monospaced().bold())
                                         .textInputAutocapitalization(.characters)
                                         .autocorrectionDisabled()
@@ -1432,11 +1432,11 @@ struct LauncherView: View {
                                             .font(.caption.bold())
                                             .foregroundStyle(s.mode == 1 ? .orange : .cyan)
                                         Text("•")
-                                        Label(s.pvp ? "PvP Bật" : "Hòa bình Co-op", systemImage: s.pvp ? "burst.fill" : "shield.fill")
+                                        Label(s.pvp ? "PvP On" : "Peaceful Co-op", systemImage: s.pvp ? "burst.fill" : "shield.fill")
                                             .font(.caption.bold())
                                             .foregroundStyle(s.pvp ? .red : .green)
                                         Spacer()
-                                        Text("Đã đồng bộ tự động")
+                                        Text("Auto-synced")
                                             .font(.caption2)
                                             .foregroundStyle(.secondary)
                                     }
@@ -1444,23 +1444,23 @@ struct LauncherView: View {
                                     .background(Color.green.opacity(0.12))
                                     .clipShape(RoundedRectangle(cornerRadius: 8))
                                 } else {
-                                    Text("Chế độ chơi (Story / Sandbox) và luật PvP tự động đồng bộ theo mã phòng của chủ phòng.")
+                                    Text("Game mode (Story / Sandbox) and PvP rules auto-sync to the host's room code.")
                                         .font(.caption2).foregroundStyle(.secondary)
                                 }
 
                                 HStack {
                                     Image(systemName: "lock.fill").foregroundStyle(.secondary)
-                                    TextField("Mật khẩu phòng (nếu chủ phòng đặt)", text: $s.roomPass)
+                                    TextField("Room password (if the host set one)", text: $s.roomPass)
                                         .textInputAutocapitalization(.never)
                                         .autocorrectionDisabled()
                                 }
 
-                                Text("Lưu ý: Luật sát thương PvP và Chế độ chơi hoàn toàn tuân theo chủ phòng, không thể tự đổi.")
+                                Text("Note: PvP damage rules and game mode follow the host completely, you can't change them yourself.")
                                     .font(.caption2).foregroundStyle(.orange)
                             }
                         } else if s.roomMode == "public" {
                             VStack(alignment: .leading, spacing: 10) {
-                                Picker("Phân vùng công khai", selection: $s.mode) {
+                                Picker("Public region", selection: $s.mode) {
                                     Text("Story Mode Public").tag(1)
                                     Text("Sandbox Public").tag(2)
                                 }
@@ -1468,25 +1468,25 @@ struct LauncherView: View {
 
                                 HStack {
                                     Image(systemName: "globe.americas.fill").foregroundStyle(.green)
-                                    Text("Sảnh chung công khai (Hỗ trợ 32 / 64 người/phòng)")
+                                    Text("Public shared lobby (Supports 32 / 64 players per room)")
                                         .fontWeight(.medium)
                                 }
-                                Text("Tự động kết nối vào sảnh chung với người chơi trực tuyến trên server AWS iOSVN. Chế độ Hòa bình bật mặc định.")
+                                Text("Auto-connects to the shared lobby with players online on the AWS iOSVN server. Peaceful mode is on by default.")
                                     .font(.caption).foregroundStyle(.secondary)
                             }
                         } else {
                             VStack(alignment: .leading, spacing: 8) {
-                                Picker("Chế độ LAN", selection: $s.mode) {
+                                Picker("LAN Mode", selection: $s.mode) {
                                     Text("Story Mode").tag(1)
                                     Text("Sandbox").tag(2)
                                 }
                                 .pickerStyle(.segmented)
-                                Text("Mở phòng trên Wi-Fi (Tối đa \(s.maxPlayers) người): Kết nối qua: \(localIPs().joined(separator: " hoặc "))")
+                                Text("Host a room on Wi-Fi (Up to \(s.maxPlayers) players): Connect via: \(localIPs().joined(separator: " or "))")
                                     .font(.callout).textSelection(.enabled)
                             }
                         }
 
-                        DisclosureGroup("Máy chủ (Nâng cao)") {
+                        DisclosureGroup("Server (Advanced)") {
                             HStack {
                                 Text("Server IP:")
                                 TextField("18.143.103.253", text: $s.server)
@@ -1496,7 +1496,7 @@ struct LauncherView: View {
                             }
                             HStack {
                                 Circle().fill(Color.green).frame(width: 8, height: 8)
-                                Text("Server AWS iOSVN Singapore (Ping ~40ms, Hỗ trợ 32 / 64 người)")
+                                Text("AWS iOSVN Singapore server (Ping ~40ms, Supports 32 / 64 players)")
                                     .font(.caption2).foregroundStyle(.secondary)
                             }
                         }
@@ -1504,11 +1504,11 @@ struct LauncherView: View {
                 }
 
                 if !s.multiplayer {
-                    Section("Lệnh Cheat GTA V (Chỉ Offline)") {
+                    Section("GTA V Cheat Codes (Offline only)") {
                         Button(action: { showingCheatSheet = true }) {
-                            Label("Xem & Kích hoạt Lệnh Cheat", systemImage: "wand.and.stars")
+                            Label("View & Activate Cheat Codes", systemImage: "wand.and.stars")
                         }
-                        Text("Tra cứu và kích hoạt nhanh các lệnh cheat (Bất tử, full vũ khí, trực thăng, xe đua...). Lệnh cheat tự động bị khóa trong chế độ Online.")
+                        Text("Quickly look up and activate cheat codes (invincibility, full weapons, helicopter, race cars...). Cheat codes are auto-locked in Online mode.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
@@ -1543,7 +1543,7 @@ struct LauncherView: View {
         .fullScreenCover(isPresented: $showingHUDEditor) {
             HUDEditorView(settings: s)
         }
-        .alert("Thông báo Đồ họa", isPresented: $showingResetAlert) {
+        .alert("Graphics Notice", isPresented: $showingResetAlert) {
             Button("OK", role: .cancel) { }
         } message: {
             Text(resetAlertMessage)
@@ -1561,14 +1561,14 @@ struct LauncherView: View {
                     .buttonStyle(.borderedProminent)
 
                 VStack(alignment: .leading, spacing: 5) {
-                    Text("💡 Hướng dẫn cài đặt nhanh qua ứng dụng Tệp:")
+                    Text("💡 Quick install guide using the Files app:")
                         .font(.caption.bold())
                         .foregroundStyle(.orange)
-                    Text("1. Giải nén file zip chứa data trên máy tính hoặc app Tệp.\n2. Mở app Tệp (Files) > Trên iPhone/iPad > GTA V.\n3. Tạo thư mục tên là 'game' (chữ thường).\n4. Dán 2 thư mục 'data' và 'b' vào bên trong thư mục 'game'.")
+                    Text("1. Unzip the zip file with the data on your computer or in the Files app.\n2. Open the Files app > On My iPhone/iPad > GTA V.\n3. Create a folder named 'game' (lowercase).\n4. Paste the 2 folders 'data' and 'b' inside the 'game' folder.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     Divider().padding(.vertical, 2)
-                    Text("📦 Lưu ý dung lượng: Game đầy đủ chiếm ~21 GB. Nếu giải nén trực tiếp trên iPhone/iPad cần trống tối thiểu 42 GB (21 GB zip + 21 GB giải nén; sau khi xong xóa file zip đi còn 21 GB). Giải nén trước trên máy tính rồi chép vào sẽ chỉ tốn 21 GB bộ nhớ máy.")
+                    Text("📦 Storage note: The full game takes ~21 GB. If you unzip directly on iPhone/iPad you need at least 42 GB free (21 GB zip + 21 GB unzipped; after finishing, delete the zip and it goes back to 21 GB). Unzipping on your computer first and copying it over only uses 21 GB on the device.")
                         .font(.caption2)
                         .foregroundStyle(.yellow)
                 }
@@ -1620,12 +1620,12 @@ struct LauncherView: View {
         if s.multiplayer && s.roomMode == "join" {
             let digits = s.joinCode.filter { $0.isNumber }
             if digits.isEmpty {
-                error = "Nhập mã phòng (vd: SP-8621) để vào chơi cùng bạn bè."
+                error = "Enter the room code (e.g. SP-8621) to play with friends."
                 return
             }
         }
         if s.multiplayer && s.roomMode != "lan" && s.server.trimmingCharacters(in: .whitespaces).isEmpty {
-            error = "Nhập địa chỉ máy chủ để kết nối."
+            error = "Enter the server address to connect."
             return
         }
         if s.name.trimmingCharacters(in: .whitespaces).isEmpty {
@@ -1730,9 +1730,9 @@ public func muguetOpenMenu() {
         while let child = presenter.presentedViewController { presenter = child }
 
         let alert = UIAlertController(title: "GTA V Menu", message: nil, preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "Tiếp tục chơi", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Continue playing", style: .cancel))
 
-        alert.addAction(UIAlertAction(title: "Chỉnh vị trí & kích thước nút (HUD)", style: .default, handler: { _ in
+        alert.addAction(UIAlertAction(title: "Adjust button position & size (HUD)", style: .default, handler: { _ in
             let host = UIHostingController(rootView: HUDEditorView(settings: Settings()))
             host.modalPresentationStyle = .fullScreen
             presenter.present(host, animated: true)
@@ -1740,7 +1740,7 @@ public func muguetOpenMenu() {
 
         let isMp = muguet_is_multiplayer()
         if !isMp {
-            alert.addAction(UIAlertAction(title: "Bảng lệnh cheat", style: .default, handler: { _ in
+            alert.addAction(UIAlertAction(title: "Cheat code list", style: .default, handler: { _ in
                 let cheatHost = UIHostingController(rootView: CheatMenuView(onApply: { code in
                     code.withCString { muguet_apply_cheat($0) }
                 }))
@@ -1749,7 +1749,7 @@ public func muguetOpenMenu() {
             }))
         }
 
-        alert.addAction(UIAlertAction(title: "Cài đặt & Tùy chọn", style: .default, handler: { _ in
+        alert.addAction(UIAlertAction(title: "Settings & Options", style: .default, handler: { _ in
             weak var sheet: UIViewController?
             let host = UIHostingController(rootView: LauncherView(isOverlay: true, play: {
                 sheet?.dismiss(animated: true)
@@ -1761,11 +1761,11 @@ public func muguetOpenMenu() {
             presenter.present(host, animated: true)
         }))
 
-        alert.addAction(UIAlertAction(title: "Khôi phục đồ họa (Fix màn hình đen)", style: .destructive, handler: { _ in
+        alert.addAction(UIAlertAction(title: "Restore graphics (Fix black screen)", style: .destructive, handler: { _ in
             resetGraphicsSettings()
         }))
 
-        alert.addAction(UIAlertAction(title: "Thoát ứng dụng", style: .destructive, handler: { _ in
+        alert.addAction(UIAlertAction(title: "Quit app", style: .destructive, handler: { _ in
             suspendApp()
         }))
 

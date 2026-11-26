@@ -270,7 +270,7 @@ impl ApplicationHandler for App {
                     self.startup_stage, gpu::STARTED.load(std::sync::atomic::Ordering::Relaxed),
                     gpu::OCCLUDED.load(std::sync::atomic::Ordering::Relaxed), gpu::SUSPENDED.load(std::sync::atomic::Ordering::Relaxed));
                 #[cfg(target_os = "ios")]
-                crate::touch::loading(Some(&format!("{}\nChưa có hình ảnh sau 45 giây. Game vẫn đang khởi động.\nNếu không tiếp tục, mở lại Muguet và chia sẻ muguet-runtime.log.", self.startup_stage)));
+                crate::touch::loading(Some(&format!("{}\nNo picture after 45 seconds. The game is still starting.\nIf it doesn't continue, reopen GTA V and share muguet-runtime.log.", self.startup_stage)));
             }
         }
         #[allow(unused_mut)]
@@ -321,7 +321,7 @@ impl App {
         if self.started { return; }
         self.started = true;
         self.startup_since = Some(std::time::Instant::now());
-        self.startup_stage = "Đang kiểm tra dữ liệu game…".into();
+        self.startup_stage = "Checking game data…".into();
         #[cfg(target_os = "ios")]
         crate::touch::loading(Some(&self.startup_stage));
         #[cfg(target_os = "ios")]
@@ -336,11 +336,11 @@ impl App {
             let mut reported = std::time::Instant::now();
             let result = crate::config::validate_game_files_with_progress(|done, total| {
                 if done == 0 || done == total || reported.elapsed().as_millis() >= 500 {
-                    startup_status(format!("Đang kiểm tra dữ liệu game: {done}/{total} tệp…"));
+                    startup_status(format!("Checking game data: {done}/{total} files…"));
                     reported = std::time::Instant::now();
                 }
             }).and_then(|()| {
-                startup_status("Đang nạp runtime game…");
+                startup_status("Loading game runtime…");
                 crate::make_runtime(&startup)
             }).map_err(|e| format!("{e:#}"));
             let _ = tx.send(result);
