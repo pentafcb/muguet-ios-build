@@ -29,6 +29,11 @@ final class Settings: ObservableObject {
     @Published var roomMode = "create" // "create", "join", "public", "lan"
     @Published var pvp = false
     @Published var promotionSync = false
+    // Last promotionSync value seen by any Settings init/save. The
+    // render thread reads this instead of building a fresh Settings(),
+    // which would re-read config.json from disk and re-apply the saved
+    // button layout on every FPS change.
+    static var cachedPromotionSync = false
     @Published var deepOptimization = false
     @Published var maxPlayers = 32
 
@@ -165,6 +170,7 @@ final class Settings: ObservableObject {
             }
         }
         applyCustomLayout()
+        Settings.cachedPromotionSync = promotionSync
     }
 
     func parseJoinCode(_ code: String) {
@@ -270,6 +276,7 @@ final class Settings: ObservableObject {
         if json["extra_args"] == nil { json["extra_args"] = [String]() }
         let data = try JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys])
         try data.write(to: configURL)
+        Settings.cachedPromotionSync = promotionSync
     }
 
     func resetLayout() {
@@ -1047,7 +1054,7 @@ struct LauncherView: View {
                     .buttonStyle(.borderedProminent)
                     .tint(.green)
 
-                    Button(action: { exit(0) }) {
+                    Button(action: { suspendApp() }) {
                         Text("Thoát hẳn ứng dụng (Exit)").font(.callout.weight(.medium)).frame(maxWidth: 220)
                     }
                     .controlSize(.regular)
@@ -1571,6 +1578,19 @@ struct LauncherView: View {
             }
             if let e = importer.error { Text(e).foregroundStyle(.red).font(.callout).multilineTextAlignment(.center) }
         }
+        .onAppear(perform: checkStartupError)
+    }
+
+    // The Rust engine writes Documents/muguet-startup-error.txt when
+    // config fails before the game window exists (main.rs); the app
+    // then exits, so surface it here on the next launch instead of
+    // leaving the user with a silent quit. Deleted after one show.
+    private func checkStartupError() {
+        let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("muguet-startup-error.txt")
+        guard let text = try? String(contentsOf: url, encoding: .utf8), !text.isEmpty else { return }
+        error = text
+        try? FileManager.default.removeItem(at: url)
     }
 
     @ViewBuilder var playButton: some View {
@@ -1670,8 +1690,11 @@ private final class RefreshHint: NSObject {
 
 @_cdecl("muguet_set_refresh_rate")
 public func muguetSetRefreshRate(_ fps: UInt32) {
-    let settings = Settings()
-    DispatchQueue.main.async { RefreshHint.shared.set(fps, lockedPacing: settings.promotionSync) }
+    // Do NOT build a Settings() here: init() reads config.json from
+    // disk and re-applies the saved button layout, so every FPS change
+    // used to do disk I/O and clobber unsaved layout edits. The cached
+    // value is updated by every Settings init/save instead.
+    DispatchQueue.main.async { RefreshHint.shared.set(fps, lockedPacing: Settings.cachedPromotionSync) }
 }
 
 @_cdecl("muguet_wait_vsync")
@@ -1679,12 +1702,30 @@ public func muguetWaitVsync(_ timeoutMs: UInt32) -> Bool {
     return RefreshHint.shared.waitVsync(timeoutMs: timeoutMs)
 }
 
+// The foreground-active scene's key window. connectedScenes.first
+// can be a background scene (iPad / multi-scene), so menus and share
+// sheets used to present on the wrong window or silently do nothing.
+func foregroundKeyWindow() -> UIWindow? {
+    let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+    return scenes.first(where: { $0.activationState == .foregroundActive })?.windows.first(where: { $0.isKeyWindow })
+        ?? scenes.flatMap { $0.windows }.first(where: { $0.isKeyWindow })
+}
+
+func foregroundRootViewController() -> UIViewController? {
+    foregroundKeyWindow()?.rootViewController
+}
+
+// Apple treats programmatic exit(0) as a crash: no scene lifecycle,
+// no save flush. Suspend to the background instead (same as pressing
+// Home); the user can swipe the app away normally.
+func suspendApp() {
+    UIApplication.shared.perform(#selector(NSXPCConnection.suspend))
+}
+
 @_cdecl("muguet_open_menu")
 public func muguetOpenMenu() {
     DispatchQueue.main.async {
-        guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-              let window = scene.windows.first(where: { $0.isKeyWindow }),
-              let root = window.rootViewController else { return }
+        guard let root = foregroundRootViewController() else { return }
         var presenter = root
         while let child = presenter.presentedViewController { presenter = child }
 
@@ -1725,7 +1766,7 @@ public func muguetOpenMenu() {
         }))
 
         alert.addAction(UIAlertAction(title: "Thoát ứng dụng", style: .destructive, handler: { _ in
-            exit(0)
+            suspendApp()
         }))
 
         presenter.present(alert, animated: true)
@@ -1750,12 +1791,16 @@ func shareDiagnostics() {
     let folder = configURL.deletingLastPathComponent()
     let logs = ["muguet-previous.log", "muguet-runtime.log", "muguet-crash.log", "muguet-debug.log"].map { folder.appendingPathComponent($0) }
         .filter { FileManager.default.fileExists(atPath: $0.path) }
-    guard !logs.isEmpty,
-          let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-          let window = scene.windows.first(where: { $0.isKeyWindow }),
-          let root = window.rootViewController else { return }
+    guard let root = foregroundRootViewController() else { return }
     var presenter = root
     while let child = presenter.presentedViewController { presenter = child }
+    // Sharing used to silently do nothing when there were no logs.
+    if logs.isEmpty {
+        let alert = UIAlertController(title: "No logs", message: "There are no diagnostics logs to share yet.", preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .cancel))
+        presenter.present(alert, animated: true)
+        return
+    }
     let sheet = UIActivityViewController(activityItems: logs, applicationActivities: nil)
     if let popover = sheet.popoverPresentationController {
         popover.sourceView = presenter.view
@@ -1767,9 +1812,7 @@ func shareDiagnostics() {
 func shareSaves() {
     let folder = configURL.deletingLastPathComponent().appendingPathComponent("saves")
     try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-    guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-          let window = scene.windows.first(where: { $0.isKeyWindow }),
-          let root = window.rootViewController else { return }
+    guard let root = foregroundRootViewController() else { return }
     var presenter = root
     while let child = presenter.presentedViewController { presenter = child }
     let sheet = UIActivityViewController(activityItems: [folder], applicationActivities: nil)

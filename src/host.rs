@@ -72,14 +72,15 @@ pub const MISSING_TEXT: &[(&str, &str)] = &[
 
 fn missing_text(caller: &mut Caller<'_, HostState>, hash: u32) -> Result<u64> {
     static TEXT: LazyLock<Mutex<HashMap<u32, u64>>> = LazyLock::new(Default::default);
-    let mut text = TEXT.lock().unwrap();
+    let mut text = TEXT.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(&p) = text.get(&hash) {
         return Ok(p);
     }
     let Some((_, s)) = MISSING_TEXT.iter().find(|(l, _)| crate::proto::joaat(l) == hash) else { return Ok(0) };
     let p = match export_call(caller, "muguet:malloc", &[Val::I64(s.len() as i64 + 1)])?.first() { Some(Val::I64(p)) => *p as u64, Some(Val::I32(p)) => *p as u32 as u64, _ => 0 };
     if p != 0 {
-        write_bytes(&RT.get().expect("runtime").mem, p, &[s.as_bytes(), &[0]].concat());
+        let Some(rt) = RT.get() else { return Ok(0) };
+        write_bytes(&rt.mem, p, &[s.as_bytes(), &[0]].concat());
         text.insert(hash, p);
     }
     Ok(p)
@@ -90,7 +91,9 @@ pub fn mailbox_await(mem: &SharedMemory, pthread_ptr: u64) {
 }
 
 pub fn call(mut caller: Caller<'_, HostState>, idx: usize, params: &[Val], results: &mut [Val]) -> Result<()> {
-    let rt = RT.get().expect("runtime");
+    // A host call arriving before RT is set (or after teardown) used to
+    // panic inside the wasm call. Degrade to a no-op instead.
+    let Some(rt) = RT.get() else { return Ok(()); };
     let n = rt.counts[idx].fetch_add(1, Ordering::Relaxed) + 1;
     let name = rt.imports[idx].name.as_str();
     let mem = &rt.mem;
@@ -101,7 +104,7 @@ pub fn call(mut caller: Caller<'_, HostState>, idx: usize, params: &[Val], resul
 
     if ANY_PENDING.load(Ordering::Relaxed) != 0 && !name.contains("mailbox") {
         let me = caller.data().pthread;
-        let has = me != 0 && PENDING_MAILBOX.lock().unwrap().remove(&me);
+        let has = me != 0 && PENDING_MAILBOX.lock().unwrap_or_else(|e| e.into_inner()).remove(&me);
         if has {
             ANY_PENDING.fetch_sub(1, Ordering::Relaxed);
             mailbox_await(mem, me);
@@ -130,7 +133,7 @@ pub fn call(mut caller: Caller<'_, HostState>, idx: usize, params: &[Val], resul
         }
         "_emscripten_thread_mailbox_await" => mailbox_await(mem, int(params, 0) as u64),
         "_emscripten_notify_mailbox_postmessage" => {
-            if PENDING_MAILBOX.lock().unwrap().insert(int(params, 0) as u64) {
+            if PENDING_MAILBOX.lock().unwrap_or_else(|e| e.into_inner()).insert(int(params, 0) as u64) {
                 ANY_PENDING.fetch_add(1, Ordering::Relaxed);
             }
         }
@@ -141,8 +144,14 @@ pub fn call(mut caller: Caller<'_, HostState>, idx: usize, params: &[Val], resul
         "emscripten_exit_with_live_runtime" => { PENDING_UNWIND.with(|c| c.set(true)); return Err(Unwind.into()); }
         "_emscripten_throw_longjmp" => { PENDING_LONGJMP.with(|c| c.set(true)); return Err(LongJmp.into()); }
         "exit" | "proc_exit" => {
-            eprintln!("[host] engine exit({})", int(params, 0));
-            std::process::exit(int(params, 0) as i32);
+            let code = int(params, 0);
+            eprintln!("[host] engine exit({code})");
+            // A stray exit(0) from game/script code used to kill the
+            // whole app instantly with no recovery. Ignore a clean
+            // exit; a non-zero code still terminates (genuine fatal).
+            if code != 0 {
+                std::process::exit(code as i32);
+            }
         }
         "_abort_js" => anyhow::bail!("engine called abort()"),
         "emscripten_num_logical_cores" => set_int(results, std::thread::available_parallelism().map(|n| n.get() as i64).unwrap_or(8)),
@@ -231,7 +240,9 @@ fn invoke(caller: &mut Caller<'_, HostState>, params: &[Val], results: &mut [Val
         .and_then(|r| r.as_func().flatten().cloned())
         .ok_or_else(|| anyhow::anyhow!("invoke: null function index {index}"))?;
     let sp = export_call(caller, "emscripten_stack_get_current", &[])?;
-    match f.call(&mut *caller, &params[1..], results) {
+    // params[0] is the function index; an empty params list used to
+    // panic here. Treat it as a call with no arguments.
+    match f.call(&mut *caller, params.get(1..).unwrap_or(&[]), results) {
         Ok(()) => Ok(()),
         Err(_) if take_longjmp() => {
             export_call(caller, "_emscripten_stack_restore", &sp)?;
@@ -247,7 +258,11 @@ fn heap_max(mem: &SharedMemory) -> u64 {
     let ty = mem.ty();
     let declared = ty.maximum().unwrap_or(17_179_869_184 >> ty.page_size_log2()) << ty.page_size_log2();
     if !cfg!(target_os = "ios") { return declared; }
-    declared.min(crate::performance::heap_budget(crate::performance::physical_memory(),
+    // The 3 GB iOS cap used to live only in main.rs heap_type: if the
+    // memory type were ever constructed elsewhere, heap_max reported
+    // the uncapped budget and the runtime cap silently disappeared.
+    // Enforce it here too so it holds regardless of the caller.
+    declared.min(crate::performance::ios_heap_budget(crate::performance::physical_memory(),
         crate::performance::available_memory(), mem.data_size() as u64))
 }
 
@@ -263,11 +278,15 @@ fn resize_heap(mem: &SharedMemory, requested: u64) -> bool {
         return false;
     }
     let page = 1u64 << mem.ty().page_size_log2();
+    // Clamp before the multiply: requested near u64::MAX used to make
+    // div_ceil(page) * page overflow, and the `new < requested` check
+    // below then passed a wrapped value to mem.grow.
+    let requested = requested.min(max);
     let mut cut = 1u64;
     while cut <= 4 {
         let over = (old as f64 * (1.0 + 0.2 / cut as f64)) as u64;
         let over = if cfg!(target_os = "ios") { requested } else { over.min(requested.saturating_add(100_663_296)) };
-        let new = max.min(requested.max(over).div_ceil(page) * page);
+        let new = max.min(requested.max(over).div_ceil(page).saturating_mul(page));
         if new < requested { return false; }
         let pages = (new - old).div_ceil(page);
         if mem.grow(pages).is_ok() {

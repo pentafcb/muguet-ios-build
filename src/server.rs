@@ -11,6 +11,10 @@ struct Player {
     room: String,
     name: String,
     last: Instant,
+    // Set on join and on rename; the sweep below broadcasts names only
+    // for dirty players instead of re-sending every name to every peer
+    // every 2 s (O(n^2) packets per sweep at 64 players).
+    name_dirty: bool,
 }
 
 pub fn run(port: u16, max: usize) -> std::io::Result<()> {
@@ -42,9 +46,16 @@ pub fn run(port: u16, max: usize) -> std::io::Result<()> {
                 leave(&sock, &mut players, addr, "timed out");
             }
 
-            for (addr, p) in &players {
-                for (to, _) in players.iter().filter(|(a, peer)| *a != addr && peer.room == p.room) {
-                    let _ = sock.send_to(&name_packet(p), to);
+            // Broadcast names only for players who joined or renamed
+            // since the last sweep (collected first: the send loop
+            // borrows players immutably while the flags are cleared).
+            let dirty: Vec<(SocketAddr, String, Vec<u8>)> = players.iter_mut()
+                .filter(|(_, p)| p.name_dirty)
+                .map(|(a, p)| { p.name_dirty = false; (*a, p.room.clone(), name_packet(p)) })
+                .collect();
+            for (addr, room, pkt) in &dirty {
+                for (to, _) in players.iter().filter(|(a, peer)| *a != addr && peer.room == *room) {
+                    let _ = sock.send_to(pkt, to);
                 }
             }
         }
@@ -74,9 +85,19 @@ fn handle(sock: &UdpSocket, players: &mut HashMap<SocketAddr, Player>, max: usiz
             let (room, name) = parse_room_and_name(payload);
             if let Some(p) = players.get_mut(&from) {
                 p.last = Instant::now();
+                if p.name != name {
+                    p.name = name;
+                    p.name_dirty = true;
+                }
                 p.room = room;
-                p.name = name;
                 let _ = sock.send_to(&packet(WELCOME, &[p.id]), from);
+                return;
+            }
+            // Total cap: the 5 s timeout sweep is the only bound, so
+            // address churn (or a HELLO flood) grew this map without
+            // limit. 256 total across rooms; per-room cap is `max`.
+            if players.len() >= 256 {
+                let _ = sock.send_to(&packet(FULL, &[]), from);
                 return;
             }
             let room_count = players.values().filter(|p| p.room == room).count();
@@ -84,8 +105,14 @@ fn handle(sock: &UdpSocket, players: &mut HashMap<SocketAddr, Player>, max: usiz
                 let _ = sock.send_to(&packet(FULL, &[]), from);
                 return;
             }
-            let id = (1..=255u8).find(|i| !players.values().any(|p| p.room == room && p.id == *i)).unwrap();
-            let p = Player { id, room: room.clone(), name, last: Instant::now() };
+            // Safe today only because the room_count guard above runs
+            // first; one refactor of that guard and this panicked the
+            // server thread on join.
+            let Some(id) = (1..=255u8).find(|i| !players.values().any(|p| p.room == room && p.id == *i)) else {
+                let _ = sock.send_to(&packet(FULL, &[]), from);
+                return;
+            };
+            let p = Player { id, room: room.clone(), name, last: Instant::now(), name_dirty: true };
             println!("[server] {} joined room [{}] as player {id} from {from} ({} in room, {} total online)", p.name, p.room, room_count + 1, players.len() + 1);
             let _ = sock.send_to(&packet(WELCOME, &[id]), from);
             for (addr, other) in players.iter().filter(|(_, other)| other.room == room) {

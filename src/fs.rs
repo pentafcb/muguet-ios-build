@@ -41,16 +41,41 @@ struct Fs {
     root: PathBuf,
     fds: HashMap<i64, Entry>,
     next_fd: i64,
+    // Freed fd numbers, reused before allocating a new one so the guest
+    // fd space stays bounded instead of growing forever (see alloc_fd).
+    free_fds: Vec<i64>,
 }
 
 static FS: LazyLock<Mutex<Fs>> = LazyLock::new(|| {
     let root = std::env::var("MUGUET_FSROOT").unwrap_or_else(|_| "fsroot".into());
     let root = PathBuf::from(root);
     for d in ["tmp", "home/web_user", "dev", "proc/self"] {
-        let _ = fs::create_dir_all(root.join(d));
+        if let Err(e) = fs::create_dir_all(root.join(d)) {
+            eprintln!("[fs] cannot create {}: {e}", root.join(d).display());
+        }
     }
-    Mutex::new(Fs { root, fds: HashMap::new(), next_fd: 3 })
+    Mutex::new(Fs { root, fds: HashMap::new(), next_fd: 3, free_fds: Vec::new() })
 });
+
+// Guest fd allocation: reuse a freed number first, cap the table at 1024
+// open entries, and evict one arbitrary file entry (logged) instead of
+// growing until the process RLIMIT_NOFILE is hit and every open fails.
+const MAX_FDS: usize = 1024;
+fn alloc_fd(fs: &mut Fs) -> i64 {
+    if let Some(fd) = fs.free_fds.pop() {
+        return fd;
+    }
+    if fs.fds.len() >= MAX_FDS {
+        if let Some((&fd, _)) = fs.fds.iter().find(|(_, e)| matches!(e, Entry::File { .. })) {
+            eprintln!("[fs] fd table full ({}); evicting fd {fd}", fs.fds.len());
+            fs.fds.remove(&fd);
+            return fd;
+        }
+    }
+    let fd = fs.next_fd;
+    fs.next_fd += 1;
+    fd
+}
 
 fn guest_abs(fs: &Fs, dirfd: i64, path: &str) -> Result<String, i64> {
     let base = if path.starts_with('/') || dirfd == AT_FDCWD {
@@ -96,13 +121,30 @@ fn write_stat(mem: &SharedMemory, buf: u64, md: &fs::Metadata, chr: bool) {
 }
 
 fn ok_i(results: &mut [Val], v: i64) {
+    // An empty results slice used to drop the return value silently; a
+    // value that does not fit in i32 used to truncate with `as`. Clamp
+    // instead, and never write past the slice.
     if let Some(r) = results.get_mut(0) {
-        *r = match r { Val::I64(_) => Val::I64(v), _ => Val::I32(v as i32) };
+        *r = match r {
+            Val::I64(_) => Val::I64(v),
+            _ => Val::I32(v.clamp(i32::MIN as i64, i32::MAX as i64) as i32),
+        };
     }
 }
 
+// The iovec count comes straight from the wasm guest: cap it, or a
+// corrupt n tries to allocate an unbounded Vec and aborts the process.
+// Addresses are computed with checked arithmetic so a wrapped iovs+k*16
+// reads (0, 0) instead of the wrong memory.
 fn iovecs(mem: &SharedMemory, iovs: u64, n: u64) -> Vec<(u64, u64)> {
-    (0..n).map(|k| (read_u64(mem, iovs + k * 16).unwrap_or(0), read_u64(mem, iovs + k * 16 + 8).unwrap_or(0))).collect()
+    const IOV_MAX: u64 = 1024;
+    let n = n.min(IOV_MAX);
+    (0..n).map(|k| {
+        let base = iovs.checked_add(k.checked_mul(16).unwrap_or(u64::MAX)).unwrap_or(u64::MAX);
+        let ptr = read_u64(mem, base).unwrap_or(0);
+        let len = read_u64(mem, base.checked_add(8).unwrap_or(u64::MAX)).unwrap_or(0);
+        (ptr, len)
+    }).collect()
 }
 
 fn read_dir_names(host: &Path) -> Vec<(String, u8)> {
@@ -118,7 +160,13 @@ fn read_dir_names(host: &Path) -> Vec<(String, u8)> {
 
 pub fn handle(name: &str, mem: &SharedMemory, p: &[Val], results: &mut [Val]) -> bool {
     let a = |i: usize| -> i64 { match p.get(i) { Some(Val::I32(x)) => *x as i64, Some(Val::I64(x)) => *x, _ => 0 } };
-    let mut fs = FS.lock().unwrap();
+    // Poison tolerance: a thread that panicked while holding FS used to
+    // make every later guest syscall panic on lock().unwrap().
+    // Note: the lock is still held across the whole syscall below (the
+    // table itself is the shared state); the I/O itself is short file
+    // reads/writes, and dropping it mid-syscall would need the entry
+    // taken out of the table first — a follow-up, not done here.
+    let mut fs = FS.lock().unwrap_or_else(|e| e.into_inner());
     let r: i64 = match name {
         "__syscall_openat" => (|| {
             let flags = a(2);
@@ -129,7 +177,7 @@ pub fn handle(name: &str, mem: &SharedMemory, p: &[Val], results: &mut [Val]) ->
             if exists && mode_creat && flags & O_EXCL != 0 { return Err(-EEXIST); }
             if host.is_dir() {
                 if flags & O_ACCMODE != 0 { return Err(-EISDIR); }
-                let fd = fs.next_fd; fs.next_fd += 1;
+                let fd = alloc_fd(&mut fs);
                 fs.fds.insert(fd, Entry::Dir { guest, names: None, pos: 0 });
                 return Ok(fd);
             }
@@ -148,8 +196,17 @@ pub fn handle(name: &str, mem: &SharedMemory, p: &[Val], results: &mut [Val]) ->
                 .create(mode_creat)
                 .truncate(flags & O_TRUNC != 0)
                 .open(&host)
-                .map_err(|_| -ENOENT)?;
-            let fd = fs.next_fd; fs.next_fd += 1;
+                .map_err(|e| {
+                    // Every OS error used to become -ENOENT, so a full
+                    // disk, a permission error and a missing file all
+                    // looked identical to the game. Log the real error;
+                    // the -ENOENT fallback is kept because the exact
+                    // emscripten errno numbers for EACCES/ENOSPC/EMFILE
+                    // are not verified in this codebase — do not guess.
+                    eprintln!("[fs] open {} failed: {e}", host.display());
+                    -ENOENT
+                })?;
+            let fd = alloc_fd(&mut fs);
             fs.fds.insert(fd, Entry::File { file });
             Ok(fd)
         })().unwrap_or_else(|e| e),
@@ -166,12 +223,19 @@ pub fn handle(name: &str, mem: &SharedMemory, p: &[Val], results: &mut [Val]) ->
         "__syscall_fstat64" => {
             let fd = a(0);
             if fd <= 2 {
-                let md = fs::metadata("/dev/null").unwrap();
-                write_stat(mem, a(1) as u64, &md, true); 0
+                // /dev/null metadata used to be unwrap()ed: a panic here
+                // unwinds through wasmtime for an ordinary fstat.
+                match fs::metadata("/dev/null") {
+                    Ok(md) => { write_stat(mem, a(1) as u64, &md, true); 0 }
+                    Err(_) => -EBADF,
+                }
             } else {
                 match fs.fds.get(&fd) {
                     Some(Entry::File { file, .. }) => match file.metadata() { Ok(md) => { write_stat(mem, a(1) as u64, &md, false); 0 } Err(_) => -EBADF },
-                    Some(Entry::Dir { guest, .. }) => { let md = fs::metadata(host_path(&fs, guest)).unwrap(); write_stat(mem, a(1) as u64, &md, false); 0 }
+                    Some(Entry::Dir { guest, .. }) => match fs::metadata(host_path(&fs, guest)) {
+                        Ok(md) => { write_stat(mem, a(1) as u64, &md, false); 0 }
+                        Err(_) => -EBADF,
+                    },
                     None => -EBADF,
                 }
             }
@@ -219,22 +283,33 @@ pub fn handle(name: &str, mem: &SharedMemory, p: &[Val], results: &mut [Val]) ->
                 Some(Entry::Dir { guest, names, pos }) => {
                     let names = names.get_or_insert_with(|| read_dir_names(&root.join(guest.trim_start_matches('/'))));
                     let start = (*pos / 280) as usize;
-                    let end = names.len().min(start + (count / 280) as usize);
-                    let mut off = 0u64;
-                    for (idx, (n, t)) in names.iter().enumerate().take(end).skip(start) {
-                        let mut rec = [0u8; 280];
-                        rec[0..8].copy_from_slice(&((idx as u64) + 1).to_le_bytes());
-                        rec[8..16].copy_from_slice(&(((idx + 1) * 280) as u64).to_le_bytes());
-                        rec[16..18].copy_from_slice(&280u16.to_le_bytes());
-                        rec[18] = *t;
-                        let nb = n.as_bytes();
-                        let l = nb.len().min(255);
-                        rec[19..19 + l].copy_from_slice(&nb[..l]);
-                        write_bytes(mem, dirp + off, &rec);
-                        off += 280;
+                    // A buffer smaller than one 280-byte record used to
+                    // return 0 entries with pos never advancing, so the
+                    // game's readdir loop spun forever. That is EINVAL,
+                    // not "end of directory".
+                    if count < 280 && start < names.len() {
+                        EINVAL
+                    } else {
+                        let end = names.len().min(start + (count / 280) as usize);
+                        let mut off = 0u64;
+                        for (idx, (n, t)) in names.iter().enumerate().take(end).skip(start) {
+                            let mut rec = [0u8; 280];
+                            rec[0..8].copy_from_slice(&((idx as u64) + 1).to_le_bytes());
+                            rec[8..16].copy_from_slice(&(((idx + 1) * 280) as u64).to_le_bytes());
+                            rec[16..18].copy_from_slice(&280u16.to_le_bytes());
+                            rec[18] = *t;
+                            let nb = n.as_bytes();
+                            let l = nb.len().min(255);
+                            rec[19..19 + l].copy_from_slice(&nb[..l]);
+                            // A failed write used to be ignored while off
+                            // still advanced, so the guest read stale
+                            // memory believing bytes were written.
+                            if !write_bytes(mem, dirp + off, &rec) { break; }
+                            off += 280;
+                        }
+                        *pos = (start as u64 + off / 280) * 280;
+                        off as i64
                     }
-                    *pos = (end * 280) as u64;
-                    off as i64
                 }
                 Some(_) => -ENOTDIR,
                 None => -EBADF,
@@ -257,15 +332,41 @@ pub fn handle(name: &str, mem: &SharedMemory, p: &[Val], results: &mut [Val]) ->
                     let mut total = 0u64;
                     let mut off = offset;
                     for (ptr, len) in iov {
-                        let mut buf = vec![0u8; len as usize];
-                        let n = match off {
-                            Some(o) => file.read_at(&mut buf, o).unwrap_or(0),
-                            None => file.read(&mut buf).unwrap_or(0),
-                        };
-                        write_bytes(mem, ptr, &buf[..n]);
-                        total += n as u64;
-                        if let Some(o) = off.as_mut() { *o += n as u64; }
-                        if (n as u64) < len { break; }
+                        // A single iovec used to allocate its full guest
+                        // length up front (gigabytes on a corrupt len).
+                        // Read in 1 MiB chunks with a reused buffer.
+                        let mut remaining = len;
+                        let mut cur_ptr = ptr;
+                        let mut cur_off = off;
+                        let mut buf = vec![0u8; 1 << 20];
+                        let mut failed = false;
+                        while remaining > 0 {
+                            let chunk = remaining.min(1 << 20) as usize;
+                            let n = match cur_off {
+                                Some(o) => file.read_at(&mut buf[..chunk], o),
+                                None => file.read(&mut buf[..chunk]),
+                            };
+                            let n = match n {
+                                Ok(n) => n,
+                                Err(e) => {
+                                    // Read errors used to be swallowed to
+                                    // 0, so a disk error looked like a
+                                    // clean EOF. Log it and stop.
+                                    eprintln!("[fs] fd_read failed: {e}");
+                                    failed = true;
+                                    break;
+                                }
+                            };
+                            if n == 0 { break; }
+                            write_bytes(mem, cur_ptr, &buf[..n]);
+                            total += n as u64;
+                            cur_ptr += n as u64;
+                            remaining -= n as u64;
+                            if let Some(o) = cur_off.as_mut() { *o += n as u64; }
+                            if (n as u64) < chunk as u64 { break; }
+                        }
+                        off = cur_off;
+                        if failed || remaining > 0 { break; }
                     }
                     write_u64(mem, nread_ptr, total);
                     0
@@ -307,7 +408,12 @@ pub fn handle(name: &str, mem: &SharedMemory, p: &[Val], results: &mut [Val]) ->
                 None => EBADF,
             }
         }
-        "fd_close" => if fs.fds.remove(&a(0)).is_some() || a(0) <= 2 { 0 } else { EBADF },
+        "fd_close" => if fs.fds.remove(&a(0)).is_some() || a(0) <= 2 {
+            // Freed numbers are reused by alloc_fd so the guest fd
+            // space stays bounded instead of growing forever.
+            if a(0) > 2 { fs.free_fds.push(a(0)); }
+            0
+        } else { EBADF },
         _ => return false,
     };
     drop(fs);

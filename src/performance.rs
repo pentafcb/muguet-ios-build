@@ -58,7 +58,18 @@ pub fn heap_budget(physical: u64, available: Option<u64>, current_heap: u64) -> 
 }
 
 pub fn ios_heap_budget(physical: u64, available: Option<u64>, current_heap: u64) -> u64 {
-    heap_budget(physical, available, current_heap).min(IOS_HEAP_MAX)
+    let budget = heap_budget(physical, available, current_heap).min(IOS_HEAP_MAX);
+    // The old make-ios.sh HEAP_GB / MUGUET_IOS_HEAP_GB knob was never
+    // read by any code, so "8 GB paid vs 5 GB free" did nothing. This
+    // is the knob that actually works: a runtime env override, validated
+    // and clamped to 512 MB..3 GB (non-finite/garbage values ignored).
+    // On a sideloaded IPA there is no launch env, so the compiled-in
+    // IOS_HEAP_MAX above is what the phone uses — and a free build with
+    // no increased-memory-limit entitlement jetsams well below it.
+    match std::env::var("MUGUET_HEAP_GB_MB").ok().and_then(|v| v.parse::<u64>().ok()) {
+        Some(mb) if (512..=3072).contains(&mb) => budget.min(mb * MIB).max(current_heap),
+        _ => budget,
+    }
 }
 
 pub fn growth_fits(old: u64, requested: u64, maximum: u64, available: Option<u64>) -> bool {

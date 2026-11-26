@@ -25,8 +25,18 @@ const TAIL: u64 = 9;
 fn base() -> Option<*mut u8> {
     let b = BLOCK.load(Ordering::Acquire);
     if b == 0 { return None; }
-    let (p, _) = crate::mem_base_len(&RT.get()?.mem);
-    Some(unsafe { p.add(b as usize) })
+    let (p, len) = crate::mem_base_len(&RT.get()?.mem);
+    // BLOCK is published by the game: a stale block (memory grew or
+    // the game re-allocated) used to be dereferenced unchecked — every
+    // word()/ext()/key_byte() below is an OOB read/write of wasm
+    // memory. The block layout tops out at offset 440 + 4, so require
+    // 512 bytes of room; anything else means the block is stale.
+    let b = b as usize;
+    if b.checked_add(512).map(|e| e <= len).unwrap_or(false) {
+        Some(unsafe { p.add(b) })
+    } else {
+        None
+    }
 }
 fn word(i: u64) -> Option<&'static AtomicI32> {
     base().map(|p| unsafe { &*(p.add(256 + 4 * i as usize) as *const AtomicI32) })
@@ -40,7 +50,7 @@ fn key_byte(vk: u8) -> Option<&'static AtomicU8> {
 
 pub fn publish(block: u64) {
     BLOCK.store(block, Ordering::Release);
-    let (w, h) = *SIZE.lock().unwrap();
+    let (w, h) = *SIZE.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(e) = ext(2) { e.store(w, Ordering::SeqCst); }
     if let Some(e) = ext(3) { e.store(h, Ordering::SeqCst); }
     if let Some(f) = word(FOCUS) { f.store(1, Ordering::SeqCst); }
@@ -62,12 +72,12 @@ pub fn publish(block: u64) {
 }
 
 pub fn set_size(w: i32, h: i32) {
-    *SIZE.lock().unwrap() = (w, h);
+    *SIZE.lock().unwrap_or_else(|e| e.into_inner()) = (w, h);
     if let Some(e) = ext(2) { e.store(w, Ordering::SeqCst); }
     if let Some(e) = ext(3) { e.store(h, Ordering::SeqCst); }
 }
 pub fn size() -> (i32, i32) {
-    *SIZE.lock().unwrap()
+    *SIZE.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 pub fn set_focus(focused: bool) {
@@ -99,7 +109,7 @@ pub fn set_menu_touch(enabled: bool) {
     eprintln!("[input] menu touch={enabled}, input block ready={}", BLOCK.load(Ordering::Acquire) != 0);
 }
 fn release_all() {
-    HELD.lock().unwrap().clear();
+    HELD.lock().unwrap_or_else(|e| e.into_inner()).clear();
     for i in 0..=255u8 { if let Some(k) = key_byte(i) { k.store(0, Ordering::SeqCst); } }
     if let Some(b) = word(BTN) { b.store(0, Ordering::SeqCst); }
 }
@@ -149,7 +159,7 @@ fn start_menu_key(code: &str) {
     };
     if choice != 0 {
         word.store(choice, Ordering::SeqCst);
-        eprintln!("[input] start mode chosen: {}", ["", "Story Mode", "Sandbox"][choice as usize]);
+        eprintln!("[input] start mode chosen: {}", ["", "Story Mode", "Sandbox"].get(choice as usize).copied().unwrap_or("?"));
     }
 }
 
@@ -161,7 +171,7 @@ pub fn key(winit_name: &str, pressed: bool, repeat: bool, text: Option<&str>, ct
     let v = if is_alias { None } else { vk(code) };
     if let Some(v) = v { if let Some(k) = key_byte(v) { k.store(if pressed { 0x80 } else { 0 }, Ordering::SeqCst); } }
     {
-        let mut held = HELD.lock().unwrap();
+        let mut held = HELD.lock().unwrap_or_else(|e| e.into_inner());
         if pressed { held.insert(code.to_string()); } else { held.remove(code); }
         for (src, target) in FLY_ALIAS {
             let down = held.contains(src) || held.contains(target);
@@ -171,7 +181,7 @@ pub fn key(winit_name: &str, pressed: bool, repeat: bool, text: Option<&str>, ct
     if !pressed { return; }
     let _ = repeat;
     let ch: Option<u16> = match text {
-        Some(t) if t.chars().count() == 1 && !ctrl_or_cmd && !t.chars().next().unwrap().is_control() => t.encode_utf16().next(),
+        Some(t) if t.chars().count() == 1 && !ctrl_or_cmd && !t.chars().next().is_some_and(|c| c.is_control()) => t.encode_utf16().next(),
         _ if code == "Enter" => Some(13),
         _ if code == "Backspace" => Some(8),
         _ => None,
@@ -186,7 +196,9 @@ pub fn key(winit_name: &str, pressed: bool, repeat: bool, text: Option<&str>, ct
 }
 
 pub fn button(dom_button: usize, pressed: bool) {
-    let bit = 1 << [0, 2, 1, 3, 4].get(dom_button).copied().unwrap_or(0);
+    // An unknown button used to map to bit 0 (left-click). Ignore it.
+    let Some(idx) = [0, 2, 1, 3, 4].get(dom_button).copied() else { return };
+    let bit = 1 << idx;
     if let Some(b) = word(BTN) {
         if pressed { b.fetch_or(bit, Ordering::SeqCst); } else { b.fetch_and(!bit, Ordering::SeqCst); }
     }
@@ -213,7 +225,7 @@ pub fn mouse_pos(x: i32, y: i32) {
     }
 }
 
-static SENS: LazyLock<f64> = LazyLock::new(|| std::env::var("MUGUET_MOUSE_SENS").ok().and_then(|v| v.parse().ok()).unwrap_or(2.0));
+static SENS: LazyLock<f64> = LazyLock::new(|| std::env::var("MUGUET_MOUSE_SENS").ok().and_then(|v| v.parse::<f64>().ok()).filter(|v| v.is_finite()).map(|v| v.clamp(0.1, 10.0)).unwrap_or(2.0));
 
 pub fn mouse_sensitivity() -> f64 {
     *SENS
@@ -222,7 +234,7 @@ static FRAC: Mutex<(f64, f64)> = Mutex::new((0.0, 0.0));
 
 pub fn mouse_delta_f(dx: f64, dy: f64) {
     let (ix, iy) = {
-        let mut f = FRAC.lock().unwrap();
+        let mut f = FRAC.lock().unwrap_or_else(|e| e.into_inner());
         f.0 += dx * *SENS;
         f.1 += dy * *SENS;
         let (ix, iy) = (f.0.trunc(), f.1.trunc());
@@ -249,14 +261,16 @@ fn mouse_delta(dx_: i32, dy_: i32) {
     } else {
         let (w, h) = size();
         if let (Some(mx), Some(my)) = (word(MX), word(MY)) {
-            mx.store((mx.load(Ordering::SeqCst) + dx_).clamp(0, w - 1), Ordering::SeqCst);
-            my.store((my.load(Ordering::SeqCst) + dy_).clamp(0, h - 1), Ordering::SeqCst);
+            mx.store(mx.load(Ordering::SeqCst).saturating_add(dx_).clamp(0, w - 1), Ordering::SeqCst);
+            my.store(my.load(Ordering::SeqCst).saturating_add(dy_).clamp(0, h - 1), Ordering::SeqCst);
         }
     }
 }
 pub fn wheel(notches: i32) {
     if notches != 0 { if let Some(z) = word(DZ) { z.fetch_add(notches, Ordering::SeqCst); } }
 }
+
+static CHEAT_RUNNING: AtomicBool = AtomicBool::new(false);
 
 pub fn apply_cheat(code: &str) {
     if std::env::var("MUGUET_SERVER").is_ok() || std::env::var("MUGUET_HOST").is_ok() {
@@ -265,6 +279,12 @@ pub fn apply_cheat(code: &str) {
     }
     let code = code.trim().to_uppercase();
     if code.is_empty() { return; }
+    // One thread per tap used to interleave keystrokes when the cheat
+    // button was tapped twice. Dedupe while one is in flight.
+    if CHEAT_RUNNING.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        eprintln!("[cheat] already applying a cheat");
+        return;
+    }
     eprintln!("[cheat] applying offline cheat: {code}");
     std::thread::spawn(move || {
         // Toggle GTA V cheat console: Backquote
@@ -288,6 +308,7 @@ pub fn apply_cheat(code: &str) {
         key("Enter", true, false, Some("\r"), false);
         std::thread::sleep(std::time::Duration::from_millis(60));
         key("Enter", false, false, None, false);
+        CHEAT_RUNNING.store(false, Ordering::SeqCst);
     });
 }
 

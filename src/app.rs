@@ -18,11 +18,14 @@ static STARTUP_STATUS: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(
 pub(crate) fn startup_status(message: impl Into<String>) {
     let message = message.into();
     eprintln!("[startup] {message}");
-    *STARTUP_STATUS.lock().unwrap() = Some(message);
+    // unwrap_or_else into_inner: if any thread ever panicked while
+    // holding this lock, the poisoned lock used to make every later
+    // status update panic too. Recover the value instead.
+    *STARTUP_STATUS.lock().unwrap_or_else(|e| e.into_inner()) = Some(message);
 }
 
 pub(crate) fn engine_error(message: String) {
-    *ENGINE_ERROR.lock().unwrap() = Some(message);
+    *ENGINE_ERROR.lock().unwrap_or_else(|e| e.into_inner()) = Some(message);
 }
 
 struct App {
@@ -46,8 +49,20 @@ struct App {
 
 fn backbuffer_size(window: &Window) -> (i32, i32) {
     let s = if cfg!(target_os = "ios") { window.outer_size() } else { window.inner_size() };
-    let scale: f64 = std::env::var("MUGUET_SCALE").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0);
-    if let Some((w, h)) = std::env::var("MUGUET_RES").ok().and_then(|r| { let (a, b) = r.split_once('x')?; Some((a.parse().ok()?, b.parse().ok()?)) }) {
+    // MUGUET_SCALE / MUGUET_RES come from the environment (or config):
+    // an unvalidated 0x0, negative, NaN, or 99999x99999 used to flow
+    // straight into the backbuffer and spike VRAM or fail Metal.
+    // Clamp to the same range the computed path uses.
+    let scale: f64 = std::env::var("MUGUET_SCALE").ok().and_then(|v| v.parse().ok())
+        .filter(|v: &f64| v.is_finite())
+        .map(|v| v.clamp(0.25, 2.0))
+        .unwrap_or(1.0);
+    if let Some((w, h)) = std::env::var("MUGUET_RES").ok().and_then(|r| {
+        let (a, b) = r.split_once('x')?;
+        let w: i32 = a.parse().ok()?;
+        let h: i32 = b.parse().ok()?;
+        if (320..=2560).contains(&w) && (240..=1440).contains(&h) { Some((w, h)) } else { None }
+    }) {
         return (w, h);
     }
     let (mut w, mut h) = (s.width as f64 * scale, s.height as f64 * scale);
@@ -76,7 +91,16 @@ impl ApplicationHandler for App {
             use winit::platform::ios::{ScreenEdge, WindowAttributesExtIOS};
             attrs.with_prefers_status_bar_hidden(true).with_prefers_home_indicator_hidden(true).with_preferred_screen_edges_deferring_system_gestures(ScreenEdge::ALL)
         };
-        let window = Arc::new(el.create_window(attrs).expect("create window"));
+        // A Metal/window failure (backgrounded launch, no GPU, surface
+        // lost on resume) used to panic the event-loop thread and kill
+        // the app at startup/resume. Retry on the next resumed() instead.
+        let window = match el.create_window(attrs) {
+            Ok(w) => Arc::new(w),
+            Err(e) => {
+                eprintln!("[app] could not create window: {e}; will retry on resume");
+                return;
+            }
+        };
 
         if std::env::var("MUGUET_FULLSCREEN").map(|v| v != "0").unwrap_or(false) {
             window.set_fullscreen(Some(Fullscreen::Borderless(None)));
@@ -84,8 +108,14 @@ impl ApplicationHandler for App {
         let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
         desc.backends = wgpu::Backends::METAL;
         let instance = wgpu::Instance::new(desc);
-        let surface = instance.create_surface(window.clone()).expect("create surface");
-        *gpu::SURFACE.lock().unwrap() = Some(gpu::SurfaceHandoff { instance, surface, window: window.clone() });
+        let surface = match instance.create_surface(window.clone()) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("[app] could not create surface: {e}; will retry on resume");
+                return;
+            }
+        };
+        *gpu::SURFACE.lock().unwrap_or_else(|e| e.into_inner()) = Some(gpu::SurfaceHandoff { instance, surface, window: window.clone() });
         let (w, h) = backbuffer_size(&window);
         input::set_size(w, h);
         eprintln!("[app] window {}x{} px, back buffer {w}x{h}", window.inner_size().width, window.inner_size().height);
@@ -182,12 +212,12 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, el: &ActiveEventLoop) {
-        if let Some(message) = STARTUP_STATUS.lock().unwrap().take() {
+        if let Some(message) = STARTUP_STATUS.lock().unwrap_or_else(|e| e.into_inner()).take() {
             self.startup_stage = message;
             #[cfg(target_os = "ios")]
             if self.startup_since.is_some() { crate::touch::loading(Some(&self.startup_stage)); }
         }
-        if let Some(message) = ENGINE_ERROR.lock().unwrap().take() {
+        if let Some(message) = ENGINE_ERROR.lock().unwrap_or_else(|e| e.into_inner()).take() {
             self.startup_since = None;
             gpu::SUSPENDED.store(true, std::sync::atomic::Ordering::Relaxed);
             input::set_focus(false);
@@ -223,6 +253,17 @@ impl ApplicationHandler for App {
                 self.startup_since = None;
                 #[cfg(target_os = "ios")]
                 crate::touch::loading(None);
+            } else if since.elapsed().as_secs() >= 120 {
+                // Startup used to wait forever on a hung loader thread
+                // (slow manifest scan, deadlocked lock, huge compile).
+                // Time out, clear the started flag so Play works again,
+                // and show a retryable error instead of a frozen screen.
+                eprintln!("[startup] timed out after 120 s waiting for the first frame");
+                self.startup_since = None;
+                self.started = false;
+                self.runtime_rx = None;
+                #[cfg(target_os = "ios")]
+                crate::touch::loading(Some("Startup timed out. Reopen Muguet and share muguet-runtime.log."));
             } else if since.elapsed().as_secs() >= 45 && !self.startup_warning_shown {
                 self.startup_warning_shown = true;
                 eprintln!("[startup] still waiting for first frame: {} (GPU started={}, occluded={}, suspended={})",
@@ -252,9 +293,25 @@ impl ApplicationHandler for App {
 
     fn memory_warning(&mut self, _el: &ActiveEventLoop) {
         gpu::request_memory_cleanup();
-        crate::debug::sample_forced(crate::footprint_mb(), crate::performance::available_memory().unwrap_or(0) >> 20,
+        let avail_mb = crate::performance::available_memory().unwrap_or(0) >> 20;
+        crate::debug::sample_forced(crate::footprint_mb(), avail_mb,
             crate::RT.get().map(|r| r.mem.data_size() >> 20).unwrap_or(0), None);
         eprintln!("[memory] iOS warning: {}", crate::debug::snapshot_text());
+        // A warning used to be observability only: purge, log, and keep
+        // growing until iOS jetsammed the process with no log. If a
+        // second warning arrives within 60 s and memory is still under
+        // 200 MB after the purge, stop the game cleanly with a message
+        // instead of being jetsammed with nothing to diagnose.
+        static WARNINGS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        static LAST_WARNING: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+        let count = WARNINGS.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        let recent = LAST_WARNING.lock().unwrap_or_else(|e| e.into_inner())
+            .replace(std::time::Instant::now())
+            .is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(60));
+        if count >= 2 && recent && avail_mb < 200 {
+            eprintln!("[memory] repeated warning with {avail_mb} MB available; stopping the game cleanly instead of waiting for jetsam");
+            engine_error("Low memory — the game was stopped before iOS killed it. Reopen Muguet with lower graphics settings.".into());
+        }
     }
 }
 
@@ -291,6 +348,9 @@ impl App {
         if let Err(e) = result {
             self.runtime_rx = None;
             self.startup_since = None;
+            // A failed loader spawn used to leave started=true, so
+            // tapping Play again did nothing until relaunch.
+            self.started = false;
             eprintln!("[host] cannot prepare runtime: {e}");
             #[cfg(target_os = "ios")]
             crate::touch::loading(Some("Unable to prepare runtime. Reopen Muguet and use lower graphics settings."));
@@ -298,6 +358,13 @@ impl App {
     }
 
     fn launch_engine(&mut self, rt: Arc<Runtime>) {
+        // Guard against a double launch: two engine-main threads would
+        // instantiate the same module concurrently.
+        static ENGINE_LAUNCHED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if ENGINE_LAUNCHED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            eprintln!("[host] launch_engine called twice; ignoring the second call");
+            return;
+        }
         let Some(window) = self.window.clone() else { return };
         let (w, h) = backbuffer_size(&window);
         input::set_size(w, h);
@@ -309,12 +376,18 @@ impl App {
             .spawn(move || {
                 if let Err(e) = crate::run_engine(&rt, args) {
                     eprintln!("[host] engine failed: {e:?}");
-                    *ENGINE_ERROR.lock().unwrap() = Some(format!("{e:#}"));
+                    *ENGINE_ERROR.lock().unwrap_or_else(|e| e.into_inner()) = Some(format!("{e:#}"));
                     return;
                 }
-                std::process::exit(0);
+                // A clean engine return used to exit(0) the whole app
+                // with no chance to show anything. Surface it on the
+                // "Game stopped" screen instead.
+                *ENGINE_ERROR.lock().unwrap_or_else(|e| e.into_inner()) = Some("The game exited. Reopen Muguet to play again.".into());
             });
-        if let Err(e) = result { *ENGINE_ERROR.lock().unwrap() = Some(format!("Cannot start game thread: {e}")); }
+        if let Err(e) = result {
+            ENGINE_LAUNCHED.store(false, std::sync::atomic::Ordering::SeqCst);
+            *ENGINE_ERROR.lock().unwrap_or_else(|e| e.into_inner()) = Some(format!("Cannot start game thread: {e}"));
+        }
     }
 
     #[cfg(target_os = "ios")]

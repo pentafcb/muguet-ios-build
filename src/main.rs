@@ -57,12 +57,19 @@ pub fn footprint_mb() -> u64 {
         fn proc_pid_rusage(pid: i32, flavor: i32, buffer: *mut u64) -> i32;
         fn getpid() -> i32;
     }
-
+    // Word 9 of the rusage buffer is ru_maxrss (bytes) on Apple platforms.
+    const RUSAGE_MAXRSS_WORD: usize = 9;
     let mut info = [0u64; 16];
     if unsafe { proc_pid_rusage(getpid(), 0, info.as_mut_ptr()) } != 0 {
+        // Return 0 only on failure, and say so once so callers do not
+        // mistake "0 MB used" for a real reading.
+        static LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            eprintln!("[host] proc_pid_rusage failed; footprint reads as 0");
+        }
         return 0;
     }
-    info[2 + 7] >> 20
+    info[RUSAGE_MAXRSS_WORD] >> 20
 }
 
 pub fn set_interactive_qos() {
@@ -78,7 +85,10 @@ fn set_qos(class: u32) {
 }
 
 fn engine_thread_qos(name: &str) -> u32 {
-    if name.contains("RenderThread") || name.contains("mixer") || name.contains("Audio") && name.contains("Mix") {
+    // Parentheses are explicit here: && binds tighter than ||, and the
+    // intent is (Audio AND Mix), not (mixer OR Audio) AND Mix.
+    let lower = name.to_ascii_lowercase();
+    if name.contains("RenderThread") || lower.contains("mixer") || (name.contains("Audio") && name.contains("Mix")) {
         QOS_CLASS_USER_INTERACTIVE
     } else {
         QOS_CLASS_USER_INITIATED
@@ -150,6 +160,16 @@ fn main() -> Result<()> {
         Err(e) => {
             eprintln!("[config] {e:#}");
             alert("Muguet", &format!("{e:#}"));
+            // On iOS the alert above is a no-op (osascript is macOS-only),
+            // so persist the error where the user can see it in Files and
+            // in the launcher's shared logs instead of vanishing silently.
+            #[cfg(target_os = "ios")]
+            if let Some(home) = std::env::var_os("HOME") {
+                let _ = std::fs::write(
+                    std::path::PathBuf::from(home).join("Documents/muguet-startup-error.txt"),
+                    format!("Muguet could not start:\n{e:#}\n"),
+                );
+            }
             std::process::exit(1);
         }
     };
@@ -218,11 +238,19 @@ pub fn run_engine(rt: &Arc<Runtime>, args: Vec<String>) -> Result<()> {
     let main = instance.get_func(&mut store, "__main_argc_argv").context("no main")?;
     let mut out = [Val::I32(0)];
     app::startup_status("Đang khởi động GTA V, chờ hình ảnh đầu tiên…");
-    match main.call(&mut store, &[Val::I32(args.len() as i32), Val::I64(argv as i64)], &mut out) {
+    match main.call(&mut store, &[Val::I32(args.len().min(i32::MAX as usize) as i32), Val::I64(argv as i64)], &mut out) {
         Ok(()) => eprintln!("[host] main returned {:?}", out[0]),
         Err(_) if host::take_unwind() => {
-            eprintln!("[host] main unwound with a live runtime; waiting on engine threads");
-            loop { std::thread::park(); }
+            // Never park forever: if the engine threads are also dead this
+            // used to freeze on a black screen until force-kill. Give the
+            // engine threads 5 s to finish, then surface the failure so
+            // the launcher can show "Game stopped" instead of hanging.
+            eprintln!("[host] main unwound with a live runtime; waiting up to 5 s for engine threads");
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while std::time::Instant::now() < deadline {
+                std::thread::park_timeout(std::time::Duration::from_millis(250));
+            }
+            return Err(anyhow::anyhow!("Game runtime unwound; engine threads did not finish"));
         }
         Err(e) => return Err(anyhow::Error::from(e).context("Game runtime trapped")),
     }
@@ -258,8 +286,15 @@ fn load_module(engine: &Engine, _startup: &config::Startup) -> Result<Module> {
         static END: u8;
     }
     let (start, end) = (&raw const START, &raw const END);
-    let code = std::ptr::slice_from_raw_parts(start, end as usize - start as usize);
-    unsafe { Module::deserialize_raw(engine, std::ptr::NonNull::new(code as *mut [u8]).unwrap()) }
+    // A corrupt/truncated __GAME section (END < START) used to underflow
+    // the length and hand deserialize_raw an out-of-bounds slice.
+    let len = (end as usize).checked_sub(start as usize)
+        .context("corrupt embedded game code: __GAME end is before its start")?;
+    anyhow::ensure!(len > 0, "corrupt embedded game code: empty __GAME section");
+    let code = std::ptr::slice_from_raw_parts(start, len);
+    let code = std::ptr::NonNull::new(code as *mut [u8])
+        .context("corrupt embedded game code: null __GAME section")?;
+    unsafe { Module::deserialize_raw(engine, code) }
         .map_err(anyhow::Error::from)
         .context("embedded game code")
 }
@@ -291,18 +326,31 @@ impl CustomCodeMemory for SignedCode {
 fn load_module(engine: &Engine, startup: &config::Startup) -> Result<Module> {
     let wasm_path = startup.wasm_path.clone();
     let meta = std::fs::metadata(&wasm_path).with_context(|| format!("{}", wasm_path.display()))?;
-    let stamp = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0);
-
+    // Key the cache on a hash of the wasm bytes, not only (length, mtime):
+    // two different game.wasm files with the same length and the same
+    // 1-second mtime used to collide and load stale native code for the
+    // wrong game with no indication. A corrupt .cwasm is now logged
+    // instead of silently discarded, so a recompile has a visible reason.
+    let wasm_bytes = std::fs::read(&wasm_path).with_context(|| format!("{}", wasm_path.display()))?;
+    let wasm_hash = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        wasm_bytes.hash(&mut h);
+        h.finish()
+    };
     let mp_key = {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
         (patch::VERSION, mp::COMMANDS, host::MISSING_TEXT).hash(&mut h);
         h.finish() as u32
     };
-    let cache = startup.cache_dir.join(format!("game-{}-{stamp}-{mp_key:08x}.cwasm", meta.len()));
+    let cache = startup.cache_dir.join(format!("game-{}-{wasm_hash:016x}-{mp_key:08x}.cwasm", meta.len()));
 
-    if let Some(m) = cache.exists().then(|| unsafe { Module::deserialize_file(engine, &cache) }.ok()).flatten() {
-        return Ok(m);
+    if cache.exists() {
+        match unsafe { Module::deserialize_file(engine, &cache) } {
+            Ok(m) => return Ok(m),
+            Err(e) => eprintln!("[host] cached {} is unusable ({e}); recompiling", cache.display()),
+        }
     }
     eprintln!("[host] compiling {} to native code (one-time)…", wasm_path.display());
     let m = compile_patched(engine, &wasm_path)?;
@@ -317,7 +365,12 @@ fn load_module(engine: &Engine, startup: &config::Startup) -> Result<Module> {
             }
         }
     }
-    std::fs::write(&cache, m.serialize()?)?;
+    // Write via a temp file + atomic rename: a crash or disk-full during
+    // the write used to leave a truncated .cwasm that the next launch
+    // would then trust (or silently discard and recompile).
+    let tmp = startup.cache_dir.join(format!("game-{wasm_hash:016x}.cwasm.tmp"));
+    std::fs::write(&tmp, m.serialize()?)?;
+    std::fs::rename(&tmp, &cache)?;
     Ok(m)
 }
 
@@ -334,15 +387,22 @@ fn heap_type(mt: MemoryType) -> Result<MemoryType> {
     if !ios_memory() {
         return Ok(mt);
     }
+    // All arithmetic here is checked: the page size and minimum come from
+    // the wasm module, and an overflowing minimum used to wrap to a small
+    // value, pass the iOS heap-cap check, and create a heap far larger
+    // than the 3 GB ceiling this function exists to enforce.
+    anyhow::ensure!(mt.page_size_log2() <= 16, "Game page size is too large: 2^{}", mt.page_size_log2());
     let page = 1u64 << mt.page_size_log2();
-    let min_bytes = mt.minimum() * page;
+    let min_bytes = mt.minimum().checked_mul(page)
+        .context("Game initial memory size overflows")?;
     anyhow::ensure!(min_bytes <= performance::IOS_HEAP_MAX,
         "Game requires {} MB of initial memory, above the iOS {} MB heap limit. Use a compatible game build",
         min_bytes >> 20, performance::IOS_HEAP_MAX >> 20);
     let budget = performance::ios_heap_budget(performance::physical_memory(), performance::available_memory(), min_bytes);
     let cap = (budget / page).max(mt.minimum());
     let max = mt.maximum().map(|m| m.min(cap)).unwrap_or(cap).max(mt.minimum());
-    eprintln!("[host] adaptive game heap limit {} MB (iOS safe ceiling)", max * page >> 20);
+    let max_bytes = max.checked_mul(page).context("Game heap limit overflows")?;
+    eprintln!("[host] adaptive game heap limit {} MB (iOS safe ceiling)", max_bytes >> 20);
     MemoryTypeBuilder::new()
         .min(mt.minimum())
         .max(Some(max))
@@ -406,7 +466,13 @@ pub fn instantiate(rt: &Arc<Runtime>, pthread: u64) -> Result<(Store<HostState>,
 }
 
 pub fn spawn_pthread(pthread_ptr: u64, start_routine: u64, arg: u64) -> i32 {
-    let rt = RT.get().expect("runtime").clone();
+    // Never expect() in a host callback: a panic here unwinds through
+    // wasmtime/FFI. Return the wasm-visible error code instead.
+    let Some(rt) = RT.get() else {
+        eprintln!("[host] spawn_pthread called before the runtime was set");
+        return 6;
+    };
+    let rt = rt.clone();
 
     let name = if arg != 0 { read_cstr(&rt.mem, arg + 24) } else { String::new() };
     let name = if name.is_empty() || name.len() > 40 { format!("pthread-{pthread_ptr:x}") } else { name };
@@ -428,7 +494,14 @@ fn run_pthread(rt: &Arc<Runtime>, ptr: u64, start_routine: u64, arg: u64) -> Res
 
     let high = read_u64(&rt.mem, ptr + 80).unwrap_or(0);
     let size = read_u64(&rt.mem, ptr + 88).unwrap_or(0);
-    call_export(&mut store, &inst, "emscripten_stack_set_limits", &[Val::I64(high as i64), Val::I64((high - size) as i64)])?;
+    // A corrupt/uninitialised pthread struct (size > high) used to
+    // underflow high-size into a huge wrapped value and hand the game a
+    // bogus stack limit. Validate before trusting either field.
+    let low = high.checked_sub(size)
+        .with_context(|| format!("bad pthread stack limits high={high:#x} size={size:#x}"))?;
+    anyhow::ensure!(size > 0 && high as usize <= rt.mem.data_size(),
+        "bad pthread stack limits high={high:#x} size={size:#x}");
+    call_export(&mut store, &inst, "emscripten_stack_set_limits", &[Val::I64(high as i64), Val::I64(low as i64)])?;
     call_export(&mut store, &inst, "_emscripten_stack_restore", &[Val::I64(high as i64)])?;
 
     call_export(&mut store, &inst, "_emscripten_thread_init", &[Val::I64(ptr as i64), Val::I32(0), Val::I32(0), Val::I32(1), Val::I64(0), Val::I32(0)])?;
@@ -472,9 +545,17 @@ pub fn call_export(store: &mut Store<HostState>, inst: &Instance, name: &str, ar
 }
 
 pub fn coerce_args(args: &[Val], ty: &FuncType) -> Vec<Val> {
+    // zip() used to silently drop extra args and call with fewer args
+    // than the type requires when args was short. Say so, pad missing
+    // args with the type default, and drop extras explicitly.
+    if args.len() != ty.params().len() {
+        eprintln!("[host] coerce_args: got {} args, function wants {}; padding/dropping",
+            args.len(), ty.params().len());
+    }
     ty.params()
-        .zip(args)
-        .map(|(pt, v)| {
+        .enumerate()
+        .map(|(i, pt)| {
+            let Some(v) = args.get(i) else { return default_val(&pt) };
             let i = match v { Val::I32(x) => *x as i64, Val::I64(x) => *x, other => return other.clone() };
             match pt { ValType::I32 => Val::I32(i as i32), ValType::I64 => Val::I64(i), _ => v.clone() }
         })
@@ -487,12 +568,20 @@ fn build_argv(store: &mut Store<HostState>, inst: &Instance, mem: &SharedMemory,
     for a in args {
         let bytes = [a.as_bytes(), &[0]].concat();
         let p = alloc.call(&mut *store, bytes.len() as i64)? as u64;
-        write_bytes(mem, p, &bytes);
+        // A failed stack alloc used to be ignored here, leaving argv
+        // pointing at garbage. Fail startup cleanly instead.
+        anyhow::ensure!(p != 0, "out of stack memory while building argv");
+        anyhow::ensure!(write_bytes(mem, p, &bytes), "argv string does not fit in wasm memory");
         ptrs.push(p);
     }
-    let argv = alloc.call(&mut *store, ((ptrs.len() + 1) * 8) as i64)? as u64;
+    let argv_size = ((ptrs.len() + 1) as u64).checked_mul(8)
+        .context("argv table size overflows")?;
+    let argv = alloc.call(&mut *store, argv_size as i64)? as u64;
+    anyhow::ensure!(argv != 0, "out of stack memory while building argv table");
     for (i, p) in ptrs.iter().chain(std::iter::once(&0)).enumerate() {
-        write_u64(mem, argv + i as u64 * 8, *p);
+        let off = (i as u64).checked_mul(8).context("argv offset overflows")?;
+        let addr = argv.checked_add(off).context("argv address overflows")?;
+        anyhow::ensure!(write_u64(mem, addr, *p), "argv entry does not fit in wasm memory");
     }
     Ok(argv)
 }
@@ -516,13 +605,15 @@ pub fn mem_base_len(mem: &SharedMemory) -> (*mut u8, usize) {
 pub fn read_u64(mem: &SharedMemory, addr: u64) -> Option<u64> {
     let (base, len) = mem_base_len(mem);
     let a = addr as usize;
-    if a + 8 > len { return None; }
+    // checked_add: a guest-controlled addr near usize::MAX used to wrap
+    // a+8 past the check and read out of bounds.
+    if a.checked_add(8).is_none_or(|e| e > len) { return None; }
     unsafe { Some(std::ptr::read_unaligned(base.add(a) as *const u64)) }
 }
 pub fn read_u32(mem: &SharedMemory, addr: u64) -> Option<u32> {
     let (base, len) = mem_base_len(mem);
     let a = addr as usize;
-    if a + 4 > len { return None; }
+    if a.checked_add(4).is_none_or(|e| e > len) { return None; }
     unsafe { Some(std::ptr::read_unaligned(base.add(a) as *const u32)) }
 }
 pub fn write_u64(mem: &SharedMemory, addr: u64, v: u64) -> bool {
@@ -534,13 +625,13 @@ pub fn write_u32(mem: &SharedMemory, addr: u64, v: u32) -> bool {
 pub fn read_bytes(mem: &SharedMemory, addr: u64, n: u64) -> Vec<u8> {
     let (base, len) = mem_base_len(mem);
     let (a, n) = (addr as usize, n as usize);
-    if a + n > len { return Vec::new(); }
+    if a.checked_add(n).is_none_or(|e| e > len) { return Vec::new(); }
     unsafe { std::slice::from_raw_parts(base.add(a), n).to_vec() }
 }
 pub fn write_bytes(mem: &SharedMemory, addr: u64, data: &[u8]) -> bool {
     let (base, len) = mem_base_len(mem);
     let a = addr as usize;
-    if a + data.len() > len { return false; }
+    if a.checked_add(data.len()).is_none_or(|e| e > len) { return false; }
     unsafe { std::ptr::copy_nonoverlapping(data.as_ptr(), base.add(a), data.len()); }
     true
 }

@@ -59,23 +59,42 @@ pub fn start(mem: &SharedMemory, ring: u64, size: u64, dbg: u64) {
         return;
     }
     let mem = mem.clone();
-    std::thread::Builder::new()
+    if let Err(e) = std::thread::Builder::new()
         .name("gpu".into())
         .stack_size(32 << 20)
         .spawn(move || {
             crate::set_interactive_qos();
-            let handoff = SURFACE.lock().unwrap().take();
+            let handoff = SURFACE.lock().unwrap_or_else(|e| e.into_inner()).take();
             let mut gpu = match Gpu::new(mem.clone(), ring, size, dbg, handoff) {
                 Ok(g) => g,
                 Err(e) => {
+                    // No retry here: the surface handoff is consumed by
+                    // the first Gpu::new, so a retry would come up
+                    // headless (game runs, nothing on screen). A real
+                    // re-init needs the window back from app.rs — see
+                    // DEBUG_AUDIT.md round 3, "not fixed".
                     log(&format!("init failed: {e:#}"));
                     crate::app::engine_error(format!("Cannot initialize graphics: {e:#}"));
                     drain_forever(&mem, ring);
                 }
             };
-            gpu.run();
-        })
-        .expect("spawn gpu thread");
+            // A panic anywhere in the render loop used to kill this
+            // thread silently, leaving a frozen frame with the game
+            // still running. Catch it and surface a real error so the
+            // launcher can show the "Game stopped" screen.
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| gpu.run()));
+            if r.is_err() {
+                log("gpu thread panicked; rendering stopped");
+                crate::app::engine_error("Graphics thread crashed. Reopen the game to try again.".to_string());
+                std::thread::park();
+            }
+        }) {
+        // Spawning the gpu thread used to panic the caller. A spawn
+        // failure now clears STARTED so a later start() can retry.
+        STARTED.store(false, Ordering::SeqCst);
+        log(&format!("failed to spawn gpu thread: {e}"));
+        crate::app::engine_error(format!("Cannot start graphics thread: {e}"));
+    }
 }
 
 fn log(s: &str) {
@@ -93,9 +112,20 @@ fn drain_forever(mem: &SharedMemory, ring: u64) -> ! {
     }
 }
 
+// A game-controlled address that falls outside the wasm mapping used
+// to be dereferenced unchecked here — one corrupt ring word segfaulted
+// the host. Out-of-range accesses now hit a dummy cell (reads return 0,
+// writes go nowhere) instead of killing the process.
+static DUMMY_ATOMIC: AtomicI32 = AtomicI32::new(0);
+
 fn atomic(mem: &SharedMemory, addr: u64) -> &AtomicI32 {
-    let (base, _) = mem_base_len(mem);
-    unsafe { &*(base.add(addr as usize) as *const AtomicI32) }
+    let (base, len) = mem_base_len(mem);
+    let addr = addr as usize;
+    if addr % 4 != 0 || addr.checked_add(4).map(|e| e <= len).unwrap_or(false) {
+        unsafe { &*(base.add(addr) as *const AtomicI32) }
+    } else {
+        &DUMMY_ATOMIC
+    }
 }
 
 struct Fmt {
@@ -286,7 +316,7 @@ fn log_once(key: &str, msg: &str) {
     // otherwise grow this HashSet without limit for the whole session.
     // Clearing at 1024 entries only re-logs a message once per 1024 unique
     // ones, which is acceptable for deduplicated warnings.
-    let mut set = LOGGED.lock().unwrap();
+    let mut set = LOGGED.lock().unwrap_or_else(|e| e.into_inner());
     if set.len() >= 1024 {
         set.clear();
     }
@@ -760,6 +790,7 @@ struct BgResult { bg: BindGroup, uid: u64, dyn_off: Option<u32> }
 struct PendingMap {
     buf: Buffer,
     done: Arc<AtomicBool>,
+    failed: Arc<AtomicBool>,
     kind: MapKind,
 }
 enum MapKind {
@@ -914,7 +945,7 @@ impl Gpu {
                 atomic(&mem2, ring + 16).fetch_add(1, Ordering::Relaxed);
                 let msg = error_chain(&e);
                 let key: String = msg.chars().filter(|c| !c.is_ascii_digit()).take(200).collect();
-                let mut k = kinds.lock().unwrap();
+                let mut k = kinds.lock().unwrap_or_else(|e| e.into_inner());
                 let n = k.entry(key).or_insert(0);
                 *n += 1;
                 if *n == 1 && k.len() <= 60 {
@@ -928,7 +959,7 @@ impl Gpu {
             .as_ref()
             .map(|(s, _)| {
                 let caps = s.get_capabilities(&adapter);
-                caps.formats.iter().copied().find(|f| !f.is_srgb()).unwrap_or(caps.formats[0])
+                caps.formats.iter().copied().find(|f| !f.is_srgb()).unwrap_or_else(|| caps.formats.first().copied().unwrap_or(TextureFormat::Bgra8Unorm))
             })
             .unwrap_or(TextureFormat::Bgra8Unorm);
         let shader_dir = PathBuf::from(std::env::var("MUGUET_SHADERS").unwrap_or_default());
@@ -945,12 +976,17 @@ impl Gpu {
             let job_rx = Arc::new(Mutex::new(job_rx));
             for i in 0..4 {
                 let (dev, rx, tx) = (device.clone(), job_rx.clone(), res_tx.clone());
-                std::thread::Builder::new().name(format!("pipeline-compile-{i}")).spawn(move || loop {
-                    let job = rx.lock().unwrap().recv();
+                if let Err(e) = std::thread::Builder::new().name(format!("pipeline-compile-{i}")).spawn(move || loop {
+                    let job = rx.lock().unwrap_or_else(|e| e.into_inner()).recv();
                     let Ok((id, job)) = job else { return };
                     let p = compile_pipeline(&dev, &job);
                     if tx.send((id, p)).is_err() { return; }
-                }).expect("spawn compile thread");
+                }) {
+                    // One failed compile thread used to panic Gpu::new.
+                    // The other threads keep compiling; pipelines that
+                    // needed this one stay Pending and their draws skip.
+                    log(&format!("failed to spawn pipeline-compile-{i} thread: {e}"));
+                }
             }
             Some(job_tx)
         };
@@ -976,14 +1012,32 @@ impl Gpu {
 
     #[inline]
     fn u(&self, w: u64) -> u32 {
-        unsafe { std::ptr::read_volatile(self.base.add((w * 4) as usize) as *const u32) }
+        // Bounds-checked: a corrupt ring word used to read past the end
+        // of the wasm mapping (SIGSEGV, indistinguishable from a game
+        // crash). Out of range now reads as 0 and is logged once.
+        let off = match w.checked_mul(4) {
+            Some(o) if o.checked_add(4).map(|e| (e as usize) <= self.mem.data_size()).unwrap_or(false) => o as usize,
+            _ => {
+                log_once("ring-oob", "ring read past the end of wasm memory; treating as 0");
+                return 0;
+            }
+        };
+        unsafe { std::ptr::read_volatile(self.base.add(off) as *const u32) }
     }
     #[inline]
     fn f(&self, w: u64) -> f32 {
         f32::from_bits(self.u(w))
     }
     fn bytes(&self, addr: u64, n: u64) -> &[u8] {
-        unsafe { std::slice::from_raw_parts(self.base.add(addr as usize), n as usize) }
+        // Same bounds rule as u(): out of range returns an empty slice
+        // and the caller must treat a short read as a skipped command.
+        match (addr as usize).checked_add(n as usize) {
+            Some(end) if end <= self.mem.data_size() => unsafe { std::slice::from_raw_parts(self.base.add(addr as usize), n as usize) },
+            _ => {
+                log_once("bytes-oob", "ring byte range past the end of wasm memory; treating as empty");
+                &[]
+            }
+        }
     }
     fn hdr(&self, w: u64) -> &AtomicI32 {
         atomic(&self.mem, self.ring + 4 * w)
@@ -1001,7 +1055,10 @@ impl Gpu {
     }
     fn set_obj(&mut self, id: u32, o: Obj) {
         let i = id as usize;
-        if i > 64 << 20 {
+        // Dense Vec indexed by game id: one id of 1 M used to grow it
+        // by ~200 MB, near the old 64 M cap by tens of GB. The game
+        // uses small dense ids; anything above 1 M is corrupt data.
+        if i > 1 << 20 {
             log_once("hugeid", &format!("object id {id} out of range: ignored"));
             return;
         }
@@ -1108,7 +1165,10 @@ impl Gpu {
         loop {
             self.check_memory();
             if SUSPENDED.load(Ordering::Relaxed) {
-                let _ = self.device.poll(PollType::Wait { submission_index: None, timeout: None });
+                // Finite timeout: an unbounded Wait used to hang this
+                // thread forever if the GPU never finished the pending
+                // submission. 2 s matches the purge path below.
+                let _ = self.device.poll(PollType::Wait { submission_index: None, timeout: Some(Duration::from_secs(2)) });
                 while SUSPENDED.load(Ordering::Relaxed) { self.check_memory(); std::thread::sleep(Duration::from_millis(50)); }
             }
             self.process_maps(false);
@@ -1137,6 +1197,13 @@ impl Gpu {
     }
 
     fn run_commands(&mut self, mut tail: i32, head: i32) -> i32 {
+        // tail/head are byte offsets into the ring. A corrupt head (or a
+        // tail that underflowed) used to run garbage opcodes until tail
+        // wrapped i32 — effectively forever. Resync instead.
+        if tail < RING_DATA as i32 || head < RING_DATA as i32 || tail % 4 != 0 || head % 4 != 0 {
+            log_once("ring-bad-head", &format!("ring head/tail out of range (tail {tail}, head {head}); resyncing"));
+            return head;
+        }
         let ring_w = self.ring / 4;
         let mut since = 0u32;
         let mut executed = 0i32;
@@ -1148,10 +1215,36 @@ impl Gpu {
                 tail = RING_DATA as i32;
                 continue;
             }
+            // A corrupt length used to wrap (n*4+8) as i32 and send tail
+            // backwards, or run a command past head into unwritten ring
+            // memory. Bound the command to the bytes actually pending
+            // (head - tail when head is ahead, else to the end of wasm
+            // memory while waiting for the wrap op), and cap n itself.
+            let cmd_bytes = match n.checked_mul(4).and_then(|b| b.checked_add(8)) {
+                Some(b) if b <= 1 << 22 => b,
+                _ => {
+                    log_once("ring-bad-n", &format!("ring command length {n} out of range; resyncing"));
+                    return head;
+                }
+            };
+            let remaining: u64 = if head >= tail {
+                (head - tail) as u64
+            } else {
+                (self.mem.data_size() as u64).saturating_sub(self.ring + tail as u64)
+            };
+            if cmd_bytes > remaining {
+                log_once("ring-overrun", &format!("ring command of {cmd_bytes} bytes overruns {remaining} pending; resyncing"));
+                return head;
+            }
             let p = base + 2;
-            self.exec(op, p, n);
+            // One bad command used to panic the whole gpu thread. Catch
+            // it per command and keep rendering the rest.
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.exec(op, p, n)));
+            if r.is_err() {
+                log(&format!("gpu command op {op} panicked; skipping it"));
+            }
             executed += 1;
-            tail += (n * 4 + 8) as i32;
+            tail += cmd_bytes as i32;
             since += 1;
             if since >= 512 {
                 since = 0;
@@ -1169,7 +1262,15 @@ impl Gpu {
 
     fn exec(&mut self, op: u32, p: u64, n: u64) {
         let mb = self.base;
-        let u = move |w: u64| unsafe { std::ptr::read_volatile(mb.add(((p + w) * 4) as usize) as *const u32) };
+        let mem_len = self.mem.data_size() as u64;
+        // Checked like self.u(): the old closure read raw wasm memory
+        // with no bounds check, so a corrupt command offset segfaulted.
+        let u = move |w: u64| -> u32 {
+            match (p + w).checked_mul(4).and_then(|o| o.checked_add(4)) {
+                Some(end) if end <= mem_len => unsafe { std::ptr::read_volatile(mb.add(((p + w) * 4) as usize) as *const u32) },
+                _ => 0,
+            }
+        };
         match op {
             0 | 2 => {}
             3 => self.create_texture(u(0), u(1), u(2), u(3), u(4), u(5), u(6), u(7), u(8), u(9)),
@@ -1179,7 +1280,9 @@ impl Gpu {
             7 => self.present(u(0)),
             8 => {
                 self.flush();
-                let _ = self.device.poll(PollType::Wait { submission_index: None, timeout: None });
+                // Finite timeout, as in run(): a GPU hang used to block
+                // the gpu thread here forever on a game-triggered fence.
+                let _ = self.device.poll(PollType::Wait { submission_index: None, timeout: Some(Duration::from_secs(2)) });
                 let addr = u(0) as u64 + u(1) as u64 * 4294967296;
                 atomic(&self.mem, addr).store(u(2) as i32, Ordering::SeqCst);
                 let _ = self.mem.atomic_notify(addr, u32::MAX);
@@ -1251,11 +1354,13 @@ impl Gpu {
             }
             29 => if self.s.rs != u(0) { self.s.rs = u(0); self.pdirty = true; },
             30 => {
-                let c = u(0) as usize;
+                // c is a raw ring word: uncapped it allocated up to
+                // 4 G entries (~96 GB) and aborted the process.
+                let c = (u(0) as usize).min(16);
                 self.s.viewports = (0..c).map(|i| std::array::from_fn(|k| self.f(p + 1 + i as u64 * 6 + k as u64))).collect();
             }
             31 => {
-                let c = u(0) as usize;
+                let c = (u(0) as usize).min(16);
                 self.s.scissors = (0..c).map(|i| std::array::from_fn(|k| self.u(p + 1 + i as u64 * 4 + k as u64))).collect();
             }
             32 => self.do_draw(p),
@@ -1348,6 +1453,15 @@ impl Gpu {
 
     fn create_buffer(&mut self, id: u32, size: u32, bind: u32, misc: u32, stride: u32) {
         let size = size as u64;
+        // A game u32 size used to allocate a host shadow Vec of that
+        // size (up to 4 GB) before wgpu ever validated it. Cap at the
+        // adapter's own buffer limit — anything larger fails in wgpu
+        // anyway, so reject it here with a log instead of an OOM abort.
+        let max_buf = self.adapter.limits().max_buffer_size.max(1 << 28);
+        if size > max_buf {
+            log_once(&format!("bigbuf{id}"), &format!("buffer id {id} size {size} exceeds device limit {max_buf}: ignored"));
+            return;
+        }
         let mut b = Buf { size, stride, gpu: None, bytes: 0, shadow: None, version: 0, enc: 0, in_bg: false, counter: None };
         if bind & 4 != 0 { b.shadow = Some(vec![0u8; size as usize]); }
         let mut usage = BufferUsages::COPY_DST | BufferUsages::COPY_SRC;
@@ -1364,7 +1478,14 @@ impl Gpu {
     }
 
     fn upload_buffer(&mut self, id: u32, offset: u64, size: u64, data_addr: u64, no_overwrite: bool) {
+        // bytes() returns an empty slice on an out-of-range address;
+        // the old code then indexed data[..n] and panicked. Treat a
+        // short read as a skipped upload.
         let data = self.bytes(data_addr, size).to_vec();
+        if (data.len() as u64) < size {
+            log_once("upload-oob", "buffer upload range outside wasm memory; skipping");
+            return;
+        }
         let used = self.used(id);
         let Some(b) = self.buf_mut(id) else { return };
         if let Some(sh) = b.shadow.as_mut() {
@@ -1388,12 +1509,16 @@ impl Gpu {
         if self.tex(id).is_none() { return; }
         if self.pending_clears.contains_key(&id) { self.materialize_clears(id); self.flush(); }
         if self.used(id) { self.flush(); }
-        let t = self.tex_mut(id).unwrap();
+        let Some(t) = self.tex_mut(id) else { return };
         if let Some(p) = t.proxy_fdepth.as_mut() { p.dirty = true; }
         if let Some(p) = t.proxy_half.as_mut() { p.dirty = true; }
         let three = t.desc.dim == TextureDimension::D3;
         let (tex, a8, bc, half) = (t.tex.clone(), t.a8, t.bc, t.half);
         let mut data = self.bytes(data_addr, size).to_vec();
+        if (data.len() as u64) < size {
+            log_once("upload-tex-oob", "texture upload range outside wasm memory; skipping");
+            return;
+        }
         let (mut bpr, mut rows, mut w, mut h) = (bpr, rows, w, h);
         if let Some(bc) = bc {
             let m = tex.size().mip_level_size(mip, tex.dimension());
@@ -1440,7 +1565,9 @@ impl Gpu {
         let id = self.u(p);
         let stage = self.u(p + 1);
         let hash = format!("{:08x}{:08x}", self.u(p + 3), self.u(p + 2));
-        let nin = self.u(p + 4) as u64;
+        // nin is a raw ring word: cap it, or one corrupt word
+        // allocated a multi-GB signature Vec and aborted the process.
+        let nin = (self.u(p + 4) as u64).min(64);
         let sig = (0..nin).map(|i| SigEl { sem: self.u(p + 5 + i * 4), idx: self.u(p + 6 + i * 4), reg: self.u(p + 7 + i * 4) }).collect();
         self.set_obj(id, Obj::Shader(ShaderObj { stage, hash, sig, program: None }));
         SHADER_CREATED.fetch_add(1, Ordering::Relaxed);
@@ -1448,7 +1575,11 @@ impl Gpu {
 
     fn create_layout(&mut self, p: u64) {
         let id = self.u(p);
-        let n = self.u(p + 1) as u64;
+        // n is a raw ring word: cap the element count, and only accept
+        // slots 0..16. The old code accepted slots 0..32 while every
+        // consumer array (vb, vb_avail, pipeline strides) has exactly
+        // 16 entries, so one bad word panicked on the next draw.
+        let n = (self.u(p + 1) as u64).min(64);
         let els: Vec<El> = (0..n)
             .map(|i| {
                 let q = p + 2 + i * 7;
@@ -1458,7 +1589,7 @@ impl Gpu {
         let mut slots = Vec::new();
         let mut seen = 0u32;
         for e in &els {
-            if e.slot < 32 && (seen >> e.slot) & 1 == 0 {
+            if e.slot < 16 && (seen >> e.slot) & 1 == 0 {
                 seen |= 1 << e.slot;
                 slots.push((e.slot, e.cls));
             }
@@ -1469,7 +1600,9 @@ impl Gpu {
     fn create_state(&mut self, p: u64, n: u64) {
         let id = self.u(p);
         let kind = self.u(p + 1);
-        let words: Vec<u32> = (2..n).map(|i| self.u(p + i)).collect();
+        // n is the ring command length: cap the words Vec so a corrupt
+        // n cannot allocate unbounded memory for one state object.
+        let words: Vec<u32> = (2..n.min(4096)).map(|i| self.u(p + i)).collect();
         let sampler = if kind == 3 { Some(self.make_sampler(&words)) } else { None };
         self.set_obj(id, Obj::State(Rc::new(StateObj { words, sampler })));
     }
@@ -2067,7 +2200,7 @@ impl Gpu {
             ..Default::default()
         };
         if matches!(b.dim, TextureViewDimension::D2Array | TextureViewDimension::Cube | TextureViewDimension::CubeArray | TextureViewDimension::D2) {
-            let cnt = match b.dim { TextureViewDimension::Cube => 6, TextureViewDimension::D2 => 1, _ => if d != 0 { d } else { layers - c } };
+            let cnt = match b.dim { TextureViewDimension::Cube => 6, TextureViewDimension::D2 => 1, _ => if d != 0 { d } else { layers.saturating_sub(c) } };
             vd.base_array_layer = c.min(layers - 1);
             vd.array_layer_count = Some(cnt.min(layers.saturating_sub(c)).max(1));
         }
@@ -2085,12 +2218,25 @@ impl Gpu {
         Some(v)
     }
 
-    fn uniform_alloc(&mut self, size: u64) -> (usize, u64) {
+    // One new 24 MB GPU buffer (+ up to 24 MB CPU staging) per chunk
+    // index, with no cap: as the streamed world grew, the per-frame
+    // chunk count ratcheted up and only the 15 s purge brought it back.
+    // Cap at 8 chunks (192 MB worst case per purge window); beyond that
+    // the draw is skipped instead of growing memory until jetsam.
+    const UBO_MAX_CHUNKS: usize = 8;
+
+    fn uniform_alloc(&mut self, size: u64) -> Option<(usize, u64)> {
         let size = (size + 255) & !255;
         let slot = self.ubo_slot;
         let need_new = match self.ubo_slots[slot].get(self.ubo_chunk) { None => true, Some(_) => self.ubo_off + size + UBO_WINDOW > RING_CHUNK };
         if need_new {
-            if self.ubo_slots[slot].get(self.ubo_chunk).is_some() { self.ubo_chunk += 1; self.ubo_off = 0; }
+            if self.ubo_slots[slot].get(self.ubo_chunk).is_some() {
+                if self.ubo_chunk + 1 >= Self::UBO_MAX_CHUNKS {
+                    log_once("ubo-cap", "uniform ring hit the 8-chunk cap this frame; skipping draw");
+                    return None;
+                }
+                self.ubo_chunk += 1; self.ubo_off = 0;
+            }
             if self.ubo_slots[slot].get(self.ubo_chunk).is_none() {
                 while self.ubo_shared.len() <= self.ubo_chunk {
                     let buf = self.device.create_buffer(&BufferDescriptor { label: Some("uniform ring"), size: RING_CHUNK * FRAME_SLOTS as u64, usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST, mapped_at_creation: false });
@@ -2105,7 +2251,7 @@ impl Gpu {
         }
         let off = self.ubo_off;
         self.ubo_off += size;
-        (self.ubo_chunk, off)
+        Some((self.ubo_chunk, off))
     }
     fn flush_uniforms(&mut self) {
         for slot in &mut self.ubo_slots {
@@ -2125,7 +2271,7 @@ impl Gpu {
             log_once(&format!("packbig{}", prog.label), &format!("{}: constant buffers total {} bytes (> 64 KB)", prog.label, pack.size));
             return None;
         }
-        let (ci, off) = self.uniform_alloc(pack.size);
+        let (ci, off) = self.uniform_alloc(pack.size)?;
         let mut block = vec![0u8; pack.size as usize];
         for m in &pack.members {
             let cb = self.s.cb[stage].get(m.binding as usize).cloned().unwrap_or_default();
@@ -2474,7 +2620,13 @@ impl Gpu {
             if lim >= 0 { }
         }
         let mb = self.base;
-        let u = move |w: u64| unsafe { std::ptr::read_volatile(mb.add(((p + w) * 4) as usize) as *const u32) };
+        let mem_len = self.mem.data_size() as u64;
+        let u = move |w: u64| -> u32 {
+            match (p + w).checked_mul(4).and_then(|o| o.checked_add(4)) {
+                Some(end) if end <= mem_len => unsafe { std::ptr::read_volatile(mb.add(((p + w) * 4) as usize) as *const u32) },
+                _ => 0,
+            }
+        };
         let (kind, count, inst, start, base_vertex, start_instance) = (u(0), u(1), u(2), u(3), u(4) as i32, u(5));
         self.collect_pipelines();
         let vs_id = self.s.shader[0];
@@ -2550,7 +2702,10 @@ impl Gpu {
                 self.use_buf(ibid);
             }
         }
-        let pi = self.pass_info.clone().unwrap();
+        // Guarded by the ensure_pass check above today, but a stage
+        // helper can end the pass in between; skip the draw instead of
+        // panicking on a None pass_info.
+        let Some(pi) = self.pass_info.clone() else { self.skip(); return };
         let rs_scissor = self.s.rs != 0 && self.state(self.s.rs).map(|r| r.words.get(7).copied().unwrap_or(0) != 0).unwrap_or(false);
         let scissor = if rs_scissor && !self.s.scissors.is_empty() {
             let c = self.s.scissors[0];
@@ -2619,8 +2774,8 @@ impl Gpu {
         if st.bf != Some(bf) { pass.set_blend_constant(Color { r: bf[0], g: bf[1], b: bf[2], a: bf[3] }); st.bf = Some(bf); }
         if st.sref != Some(sref) { pass.set_stencil_reference(sref); st.sref = Some(sref); }
         match kind {
-            4 => { let (g, off) = args.unwrap(); pass.draw_indexed_indirect(&g, off); }
-            5.. => { let (g, off) = args.unwrap(); pass.draw_indirect(&g, off); }
+            4 => { let Some((g, off)) = args else { self.skip(); return }; pass.draw_indexed_indirect(&g, off); }
+            5.. => { let Some((g, off)) = args else { self.skip(); return }; pass.draw_indirect(&g, off); }
             _ => {
                 if indexed {
                     pass.draw_indexed(start..start + d_count as u32, if fold_v { 0 } else { base_vertex }, i_first..i_first + d_inst as u32);
@@ -2839,7 +2994,11 @@ impl Gpu {
         let (Some(s), Some(d)) = (self.tex(src), self.tex(dst)) else { return };
         let (ss, ds) = (Self::sub_of(&s.desc, src_sub), Self::sub_of(&d.desc, dst_sub));
         let (mw, mh, md) = ((s.desc.w >> ss.0).max(1), (s.desc.h >> ss.0).max(1), if s.desc.dim == TextureDimension::D3 { (s.desc.d >> ss.0).max(1) } else { 1 });
-        let (w, h, dep) = if has_box { (r - l, b - t, bk - f) } else { (mw, mh, md) };
+        // Game-controlled box coords: r < l used to wrap to ~4 G and
+        // flow into a huge scratch allocation. Saturate and reject an
+        // empty/inverted box.
+        let (w, h, dep) = if has_box { (r.saturating_sub(l), b.saturating_sub(t), bk.saturating_sub(f)) } else { (mw, mh, md) };
+        if has_box && (w == 0 || h == 0 || dep == 0) { return; }
         let three = s.desc.dim == TextureDimension::D3;
         let d3 = d.desc.dim == TextureDimension::D3;
         let (stex, dtex, sf, df) = (s.tex.clone(), d.tex.clone(), s.format, d.format);
@@ -2971,7 +3130,13 @@ impl Gpu {
 
     fn readback(&mut self, p: u64) {
         let mb = self.base;
-        let u = move |w: u64| unsafe { std::ptr::read_volatile(mb.add(((p + w) * 4) as usize) as *const u32) };
+        let mem_len = self.mem.data_size() as u64;
+        let u = move |w: u64| -> u32 {
+            match (p + w).checked_mul(4).and_then(|o| o.checked_add(4)) {
+                Some(end) if end <= mem_len => unsafe { std::ptr::read_volatile(mb.add(((p + w) * 4) as usize) as *const u32) },
+                _ => 0,
+            }
+        };
         let (src, sub, has_box) = (u(0), u(1), u(2) != 0);
         let (l, t, f, r, b, bk) = (u(3), u(4), u(5), u(6), u(7), u(8));
         let addr = u(9) as u64 + u(10) as u64 * 4294967296;
@@ -2982,7 +3147,7 @@ impl Gpu {
         if self.obj(src).is_none() { done(self); return; }
         if is_buf {
             let Some((g, bsize)) = self.buf(src).and_then(|bo| bo.gpu.clone().map(|g| (g, bo.size))) else { done(self); return };
-            let n = if has_box { (r - l) as u64 } else { size.min(bsize) };
+            let n = if has_box { r.saturating_sub(l) as u64 } else { size.min(bsize) };
             let padded = ((n + 3) & !3).max(4);
             let rb = self.device.create_buffer(&BufferDescriptor { label: Some("readback"), size: padded, usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ, mapped_at_creation: false });
             self.end_pass();
@@ -3002,7 +3167,7 @@ impl Gpu {
         let (bw, bh) = fmt.block_dimensions();
         let bytes = fmt.block_copy_size(None).unwrap_or(4);
         let (x0, y0, z0) = if has_box { (l, t, f) } else { (0, 0, 0) };
-        let (w, h, d) = if has_box { (r - l, b - t, bk - f) } else { (mw, mh, md) };
+        let (w, h, d) = if has_box { (r.saturating_sub(l), b.saturating_sub(t), bk.saturating_sub(f)) } else { (mw, mh, md) };
         let (bx, by) = (w.div_ceil(bw), h.div_ceil(bh));
         let row_bytes = (bx * bytes) as u64;
         let bpr = row_bytes.div_ceil(256) * 256;
@@ -3026,25 +3191,44 @@ impl Gpu {
 
     fn map_pending(&mut self, buf: Buffer, kind: MapKind) {
         let done = Arc::new(AtomicBool::new(false));
+        let failed = Arc::new(AtomicBool::new(false));
         let d2 = done.clone();
-        buf.slice(..).map_async(MapMode::Read, move |r| { if r.is_err() { log("map failed"); } d2.store(true, Ordering::SeqCst); });
-        self.pending_maps.push(PendingMap { buf, done, kind });
+        let f2 = failed.clone();
+        // The callback used to mark the map done even on error, and
+        // process_maps then expect()ed the mapped range — a panic on
+        // exactly the device-loss/OOM path. Record the failure instead.
+        buf.slice(..).map_async(MapMode::Read, move |r| { if r.is_err() { log("map failed"); f2.store(true, Ordering::SeqCst); } d2.store(true, Ordering::SeqCst); });
+        self.pending_maps.push(PendingMap { buf, done, failed, kind });
     }
 
     fn process_maps(&mut self, wait: bool) {
         if self.pending_maps.is_empty() { return; }
-        let _ = self.device.poll(if wait { PollType::Wait { submission_index: None, timeout: None } } else { PollType::Poll });
+        let _ = self.device.poll(if wait { PollType::Wait { submission_index: None, timeout: Some(Duration::from_secs(2)) } } else { PollType::Poll });
         let mut i = 0;
         while i < self.pending_maps.len() {
             if !self.pending_maps[i].done.load(Ordering::SeqCst) { i += 1; continue; }
             let pm = self.pending_maps.swap_remove(i);
+            if pm.failed.load(Ordering::SeqCst) {
+                // Map failed (device loss / OOM / destroyed buffer):
+                // drop the buffer and move on instead of panicking.
+                continue;
+            }
             {
-                let range = pm.buf.slice(..).get_mapped_range().expect("mapped range");
+                let range = match pm.buf.slice(..).get_mapped_range() {
+                    Ok(r) => r,
+                    Err(_) => continue,
+                };
                 match &pm.kind {
                     MapKind::Readback { rows, .. } => {
                         for &(from, to, n) in rows {
                             let n = n.min(range.len() as u64 - from.min(range.len() as u64));
-                            unsafe { std::ptr::copy_nonoverlapping(range.as_ptr().add(from as usize), self.base.add(to as usize), n as usize); }
+                            // to is game-controlled: the old code copied
+                            // n bytes to base+to with no upper check, so
+                            // a readback near the end of wasm memory
+                            // wrote past the mapping. Skip that row.
+                            if to.checked_add(n).map(|e| (e as usize) <= self.mem.data_size()).unwrap_or(false) {
+                                unsafe { std::ptr::copy_nonoverlapping(range.as_ptr().add(from as usize), self.base.add(to as usize), n as usize); }
+                            }
                         }
                     }
                     MapKind::Occlusion { list } => {
@@ -3231,7 +3415,7 @@ impl Gpu {
                     height: h,
                     present_mode: if caps.present_modes.contains(&PresentMode::Mailbox) { PresentMode::Mailbox } else { PresentMode::Fifo },
                     desired_maximum_frame_latency: 2,
-                    alpha_mode: caps.alpha_modes[0],
+                    alpha_mode: caps.alpha_modes.first().copied().unwrap_or(AlphaMode::Opaque),
                     view_formats: vec![],
                     color_space: SurfaceColorSpace::Auto,
                 });
@@ -3292,19 +3476,24 @@ impl Gpu {
         self.ubo_chunk = 0;
         self.ubo_off = 0;
         if let Some(idx) = self.frame_slot_done[self.ubo_slot].take() {
-            let _ = self.device.poll(PollType::Wait { submission_index: Some(idx), timeout: None });
+            // Finite timeout: waiting on a 3-frames-old submission with
+            // no timeout froze the whole game on a GPU fault/hang.
+            let _ = self.device.poll(PollType::Wait { submission_index: Some(idx), timeout: Some(Duration::from_secs(2)) });
         }
         self.process_maps(false);
     }
 
     fn prune_graphics_cache(&mut self) {
-        let recent = self.presents.saturating_sub(2);
-        let mut groups: Vec<_> = self.bind_groups.iter().filter(|(_, (_, _, seen))| *seen < recent)
+        // Oldest-first eviction with a HARD cap: the old code only
+        // removed entries unseen in the last 2 presents, so a working
+        // set genuinely larger than the cap grew past it forever (new
+        // streamed areas = new texture-id combinations in the key).
+        let mut groups: Vec<_> = self.bind_groups.iter()
             .map(|(key, (_, _, seen))| (key.clone(), *seen)).collect();
         groups.sort_unstable_by_key(|(_, seen)| *seen);
         for (key, _) in groups.into_iter().take(self.bind_groups.len().saturating_sub(BG_LIMIT)) { self.bind_groups.remove(&key); }
         let mut pipes: Vec<_> = self.pipelines.iter().filter_map(|(key, entry)| match entry {
-            PipeEntry::Done(_, seen) if *seen < recent => Some((key.clone(), *seen)), _ => None,
+            PipeEntry::Done(_, seen) => Some((key.clone(), *seen)), _ => None,
         }).collect();
         pipes.sort_unstable_by_key(|(_, seen)| *seen);
         for (key, _) in pipes.into_iter().take(self.pipelines.len().saturating_sub(PIPE_LIMIT)) { self.pipelines.remove(&key); }
@@ -3377,6 +3566,11 @@ impl Gpu {
         self.pipelines.retain(|_, p| matches!(p, PipeEntry::Pending));
         self.compute.clear();
         self.bgl_cache.clear();
+        // Per-format proxy/mip pipelines are get-or-create caches too
+        // (proxy_pipelines, mip_pipelines); dropping them frees the
+        // compiled pipeline handles until the next use rebuilds them.
+        self.proxy_pipelines.clear();
+        self.mip_pipelines.clear();
         self.last_pl = None;
         self.pdirty = true;
         // Cached texture views are rebuilt on demand (get-or-create in the
@@ -3390,6 +3584,15 @@ impl Gpu {
                     t.views.clear();
                     t.blit_bg = None;
                     t.mip_passes = None;
+                    // Depth/float proxy textures are full-size
+                    // duplicates of their source (one texture + a view
+                    // and bind group per mip x layer) and the purge
+                    // never touched them. They rebuild on demand
+                    // (dirty-flagged), same as views/mip_passes.
+                    t.proxy_depth = None;
+                    t.proxy_stencil = None;
+                    t.proxy_fdepth = None;
+                    t.proxy_half = None;
                 }
                 Obj::Srv(v) | Obj::Uav(v) => {
                     views_cleared += v.views.len();
@@ -3402,7 +3605,7 @@ impl Gpu {
             }
         }
         self.dummy_tex.clear();
-        LOGGED.lock().unwrap().clear();
+        LOGGED.lock().unwrap_or_else(|e| e.into_inner()).clear();
         for slot in &mut self.ubo_slots { slot.clear(); }
         self.ubo_shared.clear();
         self.ubo_chunk = 0;

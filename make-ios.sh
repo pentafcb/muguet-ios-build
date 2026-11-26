@@ -20,18 +20,22 @@ TEAM="${TEAM:-}"
 if [ "$MODE" != "--ipa" ] && [ -z "$TEAM" ]; then echo "set TEAM=<your Apple developer team id>"; exit 1; fi
 BUNDLE_ID="${BUNDLE_ID:-ch.cclerc.muguet.ios}"
 ENTITLEMENTS=Muguet.entitlements
-HEAP_GB=8
 if [ "${FREE:-0}" = 1 ] || [ "$MODE" = "--ipa" ]; then
   ENTITLEMENTS=Muguet-free.entitlements
-  HEAP_GB=5
 fi
-export MUGUET_IOS_HEAP_GB="${MUGUET_IOS_HEAP_GB:-$HEAP_GB}"
+# NOTE: there used to be a HEAP_GB / MUGUET_IOS_HEAP_GB knob here (8 paid,
+# 5 free) that no code ever read — the heap cap lives in
+# src/performance.rs (IOS_HEAP_MAX, 3 GB) and the runtime env override
+# MUGUET_HEAP_GB_MB. Worse, Muguet-free.entitlements has no
+# increased-memory-limit entitlement, so a free/sideload build jetsams
+# well below 3 GB whatever this script says. Do not re-add the knob
+# without wiring it into performance.rs and the entitlements.
 TOOLCHAIN=1.98.1
 export PATH="/opt/homebrew/opt/rustup/bin:$PATH"
 export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$HOME=/home --remap-path-prefix=$PWD=/muguet"
 
 if [ -n "$ZIP" ]; then
-  cargo build --release
+  cargo build --locked --release
   mkdir -p target/ios-game
   case "$ZIP" in
     *.zip)
@@ -46,10 +50,18 @@ if [ -n "$ZIP" ]; then
     SUM="$(shasum -a 256 target/ios-game/game.wasm | cut -c1-16)"
     if [ ! -f "target/ios-game/game.opt-$SUM.wasm" ]; then
       echo "optimizing the game's code with wasm-opt -O3 (a few minutes, once)…"
-      rm -f target/ios-game/game.opt-*.wasm
-      wasm-opt target/ios-game/game.wasm -O3 -g --enable-memory64 --enable-threads --enable-bulk-memory --enable-mutable-globals \
+      # The old script wiped the cache first, then aborted under set -e
+      # on a wasm-opt failure — destroying the only good copy. Keep
+      # the old cache until the new file verifies, and fall back to
+      # the unoptimised wasm instead of aborting.
+      if wasm-opt target/ios-game/game.wasm -O3 -g --enable-memory64 --enable-threads --enable-bulk-memory --enable-mutable-globals \
         --enable-sign-ext --enable-nontrapping-float-to-int --enable-simd --enable-multivalue --enable-reference-types --enable-multimemory \
-        -o "target/ios-game/game.opt-$SUM.wasm.tmp" && mv "target/ios-game/game.opt-$SUM.wasm.tmp" "target/ios-game/game.opt-$SUM.wasm"
+        -o "target/ios-game/game.opt-$SUM.wasm.tmp" && [ -s "target/ios-game/game.opt-$SUM.wasm.tmp" ]; then
+        mv "target/ios-game/game.opt-$SUM.wasm.tmp" "target/ios-game/game.opt-$SUM.wasm"
+      else
+        echo "warning: wasm-opt failed; continuing with the unoptimised game.wasm"
+        rm -f "target/ios-game/game.opt-$SUM.wasm.tmp"
+      fi
     fi
     [ -f "target/ios-game/game.opt-$SUM.wasm" ] && cp "target/ios-game/game.opt-$SUM.wasm" target/ios-game/game.wasm
   else
@@ -63,23 +75,26 @@ else
   unset MUGUET_GAME_CODE || true
 fi
 
-IPHONEOS_DEPLOYMENT_TARGET=15.0 cargo "+$TOOLCHAIN" build --release --no-default-features --target aarch64-apple-ios --target-dir target/ios
+IPHONEOS_DEPLOYMENT_TARGET=15.0 cargo "+$TOOLCHAIN" build --locked --release --no-default-features --target aarch64-apple-ios --target-dir target/ios
 
+command -v xcodegen >/dev/null || { echo "xcodegen not found (brew install xcodegen)"; exit 1; }
 (cd ios && xcodegen generate --quiet)
 rm -rf target/ios-xcode/Build/Products
 APP="$PWD/target/ios-xcode/Build/Products/Release-iphoneos/Muguet.app"
+# No -quiet on xcodebuild: the old script hid the very errors needed
+# when a build fails.
 if [ "$MODE" = "--ipa" ]; then
-  xcodebuild -quiet -project ios/Muguet.xcodeproj -scheme Muguet -configuration Release \
+  xcodebuild -project ios/Muguet.xcodeproj -scheme Muguet -configuration Release \
     -destination 'generic/platform=iOS' -derivedDataPath target/ios-xcode build \
     PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID" CODE_SIGNING_ALLOWED=NO
   rm -f "$APP/embedded.mobileprovision"
   codesign --force --sign - --entitlements ios/Muguet-sideload.entitlements --generate-entitlement-der "$APP"
 else
-  xcodebuild -quiet -project ios/Muguet.xcodeproj -scheme Muguet -configuration Release \
+  xcodebuild -project ios/Muguet.xcodeproj -scheme Muguet -configuration Release \
     -destination 'generic/platform=iOS' -derivedDataPath target/ios-xcode -allowProvisioningUpdates build \
     PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID" CODE_SIGN_ENTITLEMENTS="$ENTITLEMENTS" DEVELOPMENT_TEAM="$TEAM"
 fi
-codesign --verify "$APP"
+codesign --verify --deep --strict "$APP"
 echo "built: $APP ($(du -sh "$APP" | cut -f1))"
 
 if [ "$MODE" = "--ipa" ]; then

@@ -40,8 +40,21 @@ const LOOK_SPEED: f64 = 1400.0;
 // gave only 22% of max speed. At 1.5, 50% gives 28% and 75% gives 61%.
 const LOOK_CURVE: f64 = 1.5;
 
+// Parsed once, not on every poll: the old code ran std::env::var +
+// parse on every poll() and every look event. NaN/inf are rejected
+// (parse accepts "NaN", and clamp() lets NaN through, which used to
+// zero the look rate with no error).
+static PAD_SENS: std::sync::LazyLock<f64> = std::sync::LazyLock::new(|| {
+    std::env::var("MUGUET_PAD_SENS").ok().and_then(|v| v.parse::<f64>().ok())
+        .filter(|v| v.is_finite()).map(|v| v.clamp(0.1, 10.0)).unwrap_or(1.0)
+});
+static AIM_SENS: std::sync::LazyLock<f64> = std::sync::LazyLock::new(|| {
+    std::env::var("MUGUET_AIM_SENS").ok().and_then(|v| v.parse::<f64>().ok())
+        .filter(|v| v.is_finite()).map(|v| v.clamp(0.05, 10.0)).unwrap_or(0.4)
+});
+
 fn pad_sensitivity() -> f64 {
-    std::env::var("MUGUET_PAD_SENS").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0).clamp(0.1, 10.0)
+    *PAD_SENS
 }
 
 fn gamepad() -> Option<objc2::rc::Retained<GCExtendedGamepad>> {
@@ -55,7 +68,7 @@ fn down(b: &GCControllerButtonInput) -> bool {
 pub fn poll() -> bool {
     let Some(gp) = gamepad() else {
         if ACTIVE.swap(false, Ordering::Relaxed) {
-            if let Some(st) = STATE.lock().unwrap().take() { release(st); }
+            if let Some(st) = STATE.lock().unwrap_or_else(|e| e.into_inner()).take() { release(st); }
             eprintln!("[pad] controller disconnected");
         }
         return false;
@@ -65,7 +78,7 @@ pub fn poll() -> bool {
         crate::debug::log_line(&format!("pad connected: look base {LOOK_SPEED} px/s, pad sens {}, mouse sens {}, effective full-stick {} px/s",
             pad_sensitivity(), crate::input::mouse_sensitivity(), LOOK_SPEED * pad_sensitivity() * crate::input::mouse_sensitivity()));
     }
-    let mut guard = STATE.lock().unwrap();
+    let mut guard = STATE.lock().unwrap_or_else(|e| e.into_inner());
     let st = guard.get_or_insert_with(|| State { held: HashSet::new(), buttons: 0, last: Instant::now(), down_since: None });
     let dt = st.last.elapsed().as_secs_f64().min(0.05);
     st.last = Instant::now();
@@ -123,7 +136,7 @@ pub fn poll() -> bool {
         let (cx, cy) = (curve(raw_x), -curve(raw_y));
         if cx != 0.0 || cy != 0.0 {
             let aimed = buttons & 2 != 0 && !in_car;
-            let aim_scale = std::env::var("MUGUET_AIM_SENS").ok().and_then(|v| v.parse().ok()).unwrap_or(0.4);
+            let aim_scale = *AIM_SENS;
             // Flat rate on purpose. The old path ran through
             // aim::scale_delta, whose per-event acceleration depended on the
             // per-poll delta size, so full-stick speed changed with the poll

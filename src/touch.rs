@@ -160,7 +160,7 @@ pub extern "C" fn muguet_reset_button_layout() {
 
 #[no_mangle]
 pub extern "C" fn muguet_apply_button_layout() {
-    OVERLAY.with(|cell| if let Some(o) = cell.borrow_mut().as_mut() { o.apply_layout(); });
+    OVERLAY.with(|cell| if let Ok(mut guard) = cell.try_borrow_mut() { if let Some(o) = guard.as_mut() { o.apply_layout(); } });
 }
 
 pub fn touch_sensitivity() -> f64 { f64::from_bits(TOUCH_SENS_BITS.load(Ordering::Relaxed)) }
@@ -175,11 +175,20 @@ pub fn button_opacity() -> f64 { f64::from_bits(BUTTON_OPACITY_BITS.load(Orderin
 pub fn stick_offset_x() -> f64 { f64::from_bits(STICK_OFFSET_X_BITS.load(Ordering::Relaxed)) }
 pub fn stick_offset_y() -> f64 { f64::from_bits(STICK_OFFSET_Y_BITS.load(Ordering::Relaxed)) }
 
+// Parse + validate one float env var: non-finite values (NaN/inf)
+// used to be stored verbatim — NaN button scale made overlay buttons
+// invisible (NaN CGRect), NaN touch sens zeroed look input. Rejects
+// them and clamps to the given range instead.
+fn env_f64(name: &str, min: f64, max: f64) -> Option<f64> {
+    std::env::var(name).ok().and_then(|v| v.parse::<f64>().ok())
+        .filter(|v| v.is_finite()).map(|v| v.clamp(min, max))
+}
+
 pub fn update_settings_from_env() {
-    if let Some(v) = std::env::var("MUGUET_TOUCH_SENS").ok().and_then(|v| v.parse::<f64>().ok()) {
+    if let Some(v) = env_f64("MUGUET_TOUCH_SENS", 0.25, 6.0) {
         TOUCH_SENS_BITS.store(v.to_bits(), Ordering::Relaxed);
     }
-    if let Some(v) = std::env::var("MUGUET_AIM_SENS").ok().and_then(|v| v.parse::<f64>().ok()) {
+    if let Some(v) = env_f64("MUGUET_AIM_SENS", 0.1, 3.0) {
         AIM_SENS_BITS.store(v.to_bits(), Ordering::Relaxed);
     }
     if let Ok(v) = std::env::var("MUGUET_AIM_MODE") {
@@ -188,25 +197,25 @@ pub fn update_settings_from_env() {
     if let Ok(v) = std::env::var("MUGUET_FIRE_AIM") {
         FIRE_AIM_FLAG.store(v != "0", Ordering::Relaxed);
     }
-    if let Some(v) = std::env::var("MUGUET_BUTTON_SCALE").ok().and_then(|v| v.parse::<f64>().ok()) {
-        BUTTON_SCALE_BITS.store(v.clamp(0.6, 2.0).to_bits(), Ordering::Relaxed);
+    if let Some(v) = env_f64("MUGUET_BUTTON_SCALE", 0.6, 2.0) {
+        BUTTON_SCALE_BITS.store(v.to_bits(), Ordering::Relaxed);
     }
-    if let Some(v) = std::env::var("MUGUET_BUTTON_OFFSET_X").ok().and_then(|v| v.parse::<f64>().ok()) {
-        BUTTON_OFFSET_X_BITS.store(v.clamp(-150.0, 150.0).to_bits(), Ordering::Relaxed);
+    if let Some(v) = env_f64("MUGUET_BUTTON_OFFSET_X", -150.0, 150.0) {
+        BUTTON_OFFSET_X_BITS.store(v.to_bits(), Ordering::Relaxed);
     }
-    if let Some(v) = std::env::var("MUGUET_BUTTON_OFFSET_Y").ok().and_then(|v| v.parse::<f64>().ok()) {
-        BUTTON_OFFSET_Y_BITS.store(v.clamp(-150.0, 150.0).to_bits(), Ordering::Relaxed);
+    if let Some(v) = env_f64("MUGUET_BUTTON_OFFSET_Y", -150.0, 150.0) {
+        BUTTON_OFFSET_Y_BITS.store(v.to_bits(), Ordering::Relaxed);
     }
-    if let Some(v) = std::env::var("MUGUET_BUTTON_OPACITY").ok().and_then(|v| v.parse::<f64>().ok()) {
-        BUTTON_OPACITY_BITS.store(v.clamp(0.1, 0.9).to_bits(), Ordering::Relaxed);
+    if let Some(v) = env_f64("MUGUET_BUTTON_OPACITY", 0.1, 0.9) {
+        BUTTON_OPACITY_BITS.store(v.to_bits(), Ordering::Relaxed);
     }
-    if let Some(v) = std::env::var("MUGUET_STICK_OFFSET_X").ok().and_then(|v| v.parse::<f64>().ok()) {
-        STICK_OFFSET_X_BITS.store(v.clamp(-100.0, 150.0).to_bits(), Ordering::Relaxed);
+    if let Some(v) = env_f64("MUGUET_STICK_OFFSET_X", -100.0, 150.0) {
+        STICK_OFFSET_X_BITS.store(v.to_bits(), Ordering::Relaxed);
     }
-    if let Some(v) = std::env::var("MUGUET_STICK_OFFSET_Y").ok().and_then(|v| v.parse::<f64>().ok()) {
-        STICK_OFFSET_Y_BITS.store(v.clamp(-100.0, 150.0).to_bits(), Ordering::Relaxed);
+    if let Some(v) = env_f64("MUGUET_STICK_OFFSET_Y", -100.0, 150.0) {
+        STICK_OFFSET_Y_BITS.store(v.to_bits(), Ordering::Relaxed);
     }
-    OVERLAY.with(|cell| if let Some(o) = cell.borrow_mut().as_mut() { o.apply_layout(); });
+    OVERLAY.with(|cell| if let Ok(mut guard) = cell.try_borrow_mut() { if let Some(o) = guard.as_mut() { o.apply_layout(); } });
 }
 
 const MIN_HOLD: std::time::Duration = std::time::Duration::from_millis(120);
@@ -322,6 +331,17 @@ pub fn install(window: &Window) {
     let inner = window.inner_size().to_logical::<f64>(scale);
     let safe = (pos.x, pos.y, inner.width, inner.height);
 
+    // A second install() (window recreation) used to orphan the old
+    // overlay's UIView: the thread-local was replaced while the old
+    // root and all its buttons stayed attached to the window — leaked
+    // views and duplicated visible buttons. Remove it first.
+    OVERLAY.with(|cell| {
+        if let Ok(mut guard) = cell.try_borrow_mut() {
+            if let Some(old) = guard.take() {
+                unsafe { let _: () = msg_send![&*old.root, removeFromSuperview]; }
+            }
+        }
+    });
     let root = unsafe {
         let v: Retained<AnyObject> = msg_send![class!(UIView), new];
         let _: () = msg_send![&*v, setFrame: rect(0.0, 0.0, full.width, full.height)];
@@ -381,7 +401,7 @@ pub fn install(window: &Window) {
     };
     o.relabel();
     eprintln!("[touch] overlay ready ({:.0}x{:.0} pt, safe area {:.0},{:.0} {:.0}x{:.0})", full.width, full.height, sx, sy, sw, sh);
-    OVERLAY.with(|cell| *cell.borrow_mut() = Some(o));
+    OVERLAY.with(|cell| if let Ok(mut guard) = cell.try_borrow_mut() { *guard = Some(o); });
 }
 
 impl Overlay {
@@ -419,7 +439,8 @@ impl Overlay {
     }
 
     fn is_wheel(&self, idx: usize) -> bool {
-        if BUTTONS[idx].nav { return false; }
+        let Some(s) = BUTTONS.get(idx) else { return false };
+        if s.nav { return false; }
         match self.spec_act(idx).map(|(_, a)| a) {
             Some(Key("Tab")) | Some(Key("AltLeft")) => true,
             Some(Key("KeyQ")) => self.in_car,
@@ -428,7 +449,7 @@ impl Overlay {
     }
 
     fn spec_act(&self, idx: usize) -> Option<(&'static str, Act)> {
-        let s = &BUTTONS[idx];
+        let s = BUTTONS.get(idx)?;
         if self.menu.keys_visible() {
             if s.nav {
                 return if self.in_car { s.in_car } else { s.on_foot };
@@ -475,7 +496,7 @@ impl Overlay {
         };
 
         for (i, b) in self.buttons.iter_mut().enumerate() {
-            let s = &BUTTONS[i];
+            let Some(s) = BUTTONS.get(i) else { continue };
             let (c_dx, c_dy, c_scale) = if i < 16 { custom_button_layout(i) } else { (0.0, 0.0, 1.0) };
             b.radius = s.radius * if s.nav { nav_scale(sw) } else { b_scale * c_scale };
             let mut center = place(s.anchor);
@@ -519,7 +540,7 @@ impl Overlay {
     fn button_at(&self, p: (f64, f64)) -> Option<usize> {
         (0..self.buttons.len()).filter(|&i| self.spec_act(i).is_some()).filter(|&i| {
             let b = &self.buttons[i];
-            let r = b.radius + if BUTTONS[i].nav { 0.0 } else { 8.0 };
+            let r = b.radius + if BUTTONS.get(i).map(|s| s.nav).unwrap_or(false) { 0.0 } else { 8.0 };
             (p.0 - b.center.0).powi(2) + (p.1 - b.center.1).powi(2) <= r * r
         }).min_by(|&a, &b| {
             let distance = |i: usize| (p.0 - self.buttons[i].center.0).hypot(p.1 - self.buttons[i].center.1);
@@ -539,11 +560,19 @@ impl Overlay {
     }
 
     fn touch(&mut self, t: &Touch) {
-        let p = (t.location.x / self.scale, t.location.y / self.scale);
+        // scale_factor() is never 0 in practice, but a 0/NaN scale
+        // used to turn every touch coordinate into Inf/NaN, which
+        // pointer_position then had to clamp back.
+        let scale = if self.scale.is_finite() && self.scale > 0.0 { self.scale } else { 1.0 };
+        let p = (t.location.x / scale, t.location.y / scale);
         match t.phase {
             TouchPhase::Started => {
                 if let Some(idx) = self.button_at(p) {
-                    let act = self.spec_act(idx).map(|(_, a)| a).unwrap();
+                    // button_at only returns an index whose spec_act
+                    // is Some, but the two calls can disagree after a
+                    // menu-state change in between; skip instead of
+                    // panicking on the touch hot path.
+                    let Some(act) = self.spec_act(idx).map(|(_, a)| a) else { return };
                     match Some(act) {
                         Some(AimToggle) if !hold_aim() => self.aim_latched = !self.aim_latched,
                         Some(NavToggle) => { self.menu.toggle_keys(); self.menu_changed(); }
@@ -737,16 +766,21 @@ impl Overlay {
 }
 
 pub fn touch(t: &Touch) {
+    // try_borrow_mut: a callback inside a borrow that re-enters touch()
+    // used to panic the RefCell on the event thread. Drop the
+    // re-entrant event instead.
     OVERLAY.with(|cell| {
-        if let Some(o) = cell.borrow_mut().as_mut() {
-            if !o.hidden && !o.loading { o.touch(t); }
+        if let Ok(mut guard) = cell.try_borrow_mut() {
+            if let Some(o) = guard.as_mut() {
+                if !o.hidden && !o.loading { o.touch(t); }
+            }
         }
     });
 }
 
 pub fn refresh() -> bool {
     OVERLAY.with(|cell| {
-        let mut guard = cell.borrow_mut();
+        let Ok(mut guard) = cell.try_borrow_mut() else { return false };
         let Some(o) = guard.as_mut() else { return false };
         if o.lingering { o.apply(); }
         let mut wheeling = false;
@@ -792,15 +826,17 @@ pub fn refresh() -> bool {
 
 pub fn loading(message: Option<&str>) {
     OVERLAY.with(|cell| {
-        if let Some(o) = cell.borrow_mut().as_mut() {
-            if message.is_some() && !o.loading { o.release_all(); }
-            o.loading = message.is_some();
-            if let Some(message) = message { set_text(&o.loading_label, message); }
-            set_hidden(&o.loading_label, message.is_none());
+        if let Ok(mut guard) = cell.try_borrow_mut() {
+            if let Some(o) = guard.as_mut() {
+                if message.is_some() && !o.loading { o.release_all(); }
+                o.loading = message.is_some();
+                if let Some(message) = message { set_text(&o.loading_label, message); }
+                set_hidden(&o.loading_label, message.is_none());
+            }
         }
     });
 }
 
 pub fn release() {
-    OVERLAY.with(|cell| { if let Some(o) = cell.borrow_mut().as_mut() { o.release_all(); } });
+    OVERLAY.with(|cell| { if let Ok(mut guard) = cell.try_borrow_mut() { if let Some(o) = guard.as_mut() { o.release_all(); } } });
 }

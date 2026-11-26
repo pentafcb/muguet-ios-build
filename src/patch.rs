@@ -50,7 +50,12 @@ impl Reencode for Patcher {
     type Error = anyhow::Error;
 
     fn function_index(&mut self, f: u32) -> Result<u32, Error<Self::Error>> {
-        Ok(if f >= self.imported_funcs { f + self.shift() } else { f })
+        if f >= self.imported_funcs {
+            Ok(f.checked_add(self.shift())
+                .ok_or_else(|| anyhow::anyhow!("function index overflows while patching"))?)
+        } else {
+            Ok(f)
+        }
     }
 
     fn parse_type_section(&mut self, types: &mut wasm_encoder::TypeSection, section: wasmparser::TypeSectionReader<'_>) -> Result<(), Error<Self::Error>> {
@@ -65,7 +70,9 @@ impl Reencode for Patcher {
     fn parse_import_section(&mut self, imports: &mut wasm_encoder::ImportSection, section: wasmparser::ImportSectionReader<'_>) -> Result<(), Error<Self::Error>> {
         utils::parse_import_section(self, imports, section)?;
         for (k, (name, _, _)) in HOOKS.iter().enumerate() {
-            imports.import("env", name, wasm_encoder::EntityType::Function(self.types + k as u32));
+            let ty = self.types.checked_add(k as u32)
+                .ok_or_else(|| anyhow::anyhow!("hook type index overflows while patching"))?;
+            imports.import("env", name, wasm_encoder::EntityType::Function(ty));
         }
         Ok(())
     }
@@ -73,7 +80,9 @@ impl Reencode for Patcher {
     fn parse_export_section(&mut self, exports: &mut wasm_encoder::ExportSection, section: wasmparser::ExportSectionReader<'_>) -> Result<(), Error<Self::Error>> {
         utils::parse_export_section(self, exports, section)?;
         for (name, f) in std::mem::take(&mut self.exports) {
-            exports.export(&name, wasm_encoder::ExportKind::Func, f + self.shift());
+            let f = f.checked_add(self.shift())
+                .ok_or_else(|| anyhow::anyhow!("export function index overflows while patching"))?;
+            exports.export(&name, wasm_encoder::ExportKind::Func, f);
         }
         Ok(())
     }
@@ -86,7 +95,8 @@ impl Reencode for Patcher {
         };
         let mut f = self.new_function_with_parsed_locals(&func)?;
         use wasm_encoder::Instruction as I;
-        let call = I::Call(self.imported_funcs + hook as u32);
+        let call = I::Call(self.imported_funcs.checked_add(hook as u32)
+            .ok_or_else(|| anyhow::anyhow!("hook call index overflows while patching"))?);
         if HOOKS[hook].2 == [Arg::MissingText] {
             // only call out for the listed hashes: text lookups are hot
             for (label, _) in crate::host::MISSING_TEXT {
@@ -146,6 +156,11 @@ pub fn patch(wasm: &[u8], wanted: &[(&str, &str)]) -> Result<Vec<u8>> {
                             Name::Function(map) => {
                                 for n in map {
                                     let n = n?;
+                                    if let Some(&prev) = by_name.get(n.name) {
+                                        if prev != n.index {
+                                            eprintln!("[patch] duplicate function name {} ({} vs {}); keeping the first", n.name, prev, n.index);
+                                        }
+                                    }
                                     by_name.entry(n.name.to_string()).or_insert(n.index);
                                 }
                             }
@@ -181,10 +196,15 @@ pub fn patch(wasm: &[u8], wanted: &[(&str, &str)]) -> Result<Vec<u8>> {
             None => eprintln!("[patch] {func} not found; multiplayer will skip it"),
         }
     }
+    // Guessing global index 1 when the wasm has no __tls_base used to
+    // make the script hook read the wrong TLS base — wrong memory
+    // reads/writes that looked like a game bug, not a patch bug.
+    let tls_global = tls_global
+        .context("game.wasm has no __tls_base global (missing name section?)")?;
     let mut p = Patcher {
         imported_funcs,
         types,
-        tls_global: tls_global.unwrap_or(1),
+        tls_global,
         targets,
         exports,
         next_func: imported_funcs,

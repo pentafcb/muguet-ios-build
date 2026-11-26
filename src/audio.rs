@@ -11,11 +11,17 @@ static CALLBACKS: AtomicU64 = AtomicU64::new(0);
 static STARTED: AtomicBool = AtomicBool::new(false);
 
 pub fn start(ring: u64, capacity: u32) {
-    if STARTED.swap(true, Ordering::SeqCst) || std::env::var("MUGUET_MUTE").is_ok() {
+    // STARTED used to latch true before play() ran, so one transient
+    // failure (no device, wrong sample rate, bad ring) muted the app
+    // for the rest of the session with no retry. Latch only on
+    // success; a failed attempt clears it so the next publish retries.
+    if std::env::var("MUGUET_MUTE").is_ok() {
         return;
     }
-
-    std::thread::Builder::new()
+    if STARTED.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        return;
+    }
+    if let Err(e) = std::thread::Builder::new()
         .name("audio".into())
         .spawn(move || match play(ring, capacity) {
             Ok(stream) => {
@@ -23,16 +29,46 @@ pub fn start(ring: u64, capacity: u32) {
                 let _keep = stream;
                 loop { std::thread::park(); }
             }
-            Err(e) => eprintln!("[audio] no output: {e:#}"),
+            Err(e) => {
+                STARTED.store(false, Ordering::SeqCst);
+                eprintln!("[audio] no output: {e:#}");
+            }
         })
-        .expect("spawn audio thread");
+    {
+        STARTED.store(false, Ordering::SeqCst);
+        eprintln!("[audio] failed to spawn audio thread: {e}");
+    }
 }
 
 fn play(ring: u64, capacity: u32) -> anyhow::Result<cpal::Stream> {
     let host = cpal::default_host();
     let device = host.default_output_device().ok_or_else(|| anyhow::anyhow!("no default output device"))?;
-    let config = cpal::StreamConfig { channels: 2, sample_rate: 48000, buffer_size: cpal::BufferSize::Default };
-    let (base, _) = crate::mem_base_len(&RT.get().unwrap().mem);
+    let Some(rt) = RT.get() else { return Err(anyhow::anyhow!("runtime not ready")); };
+    let (base, mem_len) = crate::mem_base_len(&rt.mem);
+    // Validate the game-controlled ring BEFORE the realtime callback
+    // ever dereferences it. capacity 0 or non-power-of-two made the
+    // mask wrap (mask = capacity - 1) and read up to ~8 GB past the
+    // ring — a segfault inside the audio callback. An invalid ring
+    // now means silent audio, not a crash.
+    if capacity == 0 || !capacity.is_power_of_two() {
+        return Err(anyhow::anyhow!("bad audio ring capacity {capacity}"));
+    }
+    if (ring as usize).checked_add(64 + capacity as usize * 8).filter(|e| *e <= mem_len).is_none() {
+        return Err(anyhow::anyhow!("audio ring 0x{ring:x} outside wasm memory"));
+    }
+    // Sample rate: the old code hardcoded 48 kHz stereo and failed on
+    // any output that rejects it (Bluetooth, USB, AirPlay). Prefer the
+    // device's native config; fall back to 48 kHz stereo.
+    let config = match device.default_output_config() {
+        Ok(c) => {
+            let mut cfg: cpal::StreamConfig = c.into();
+            cfg.channels = 2;
+            cfg.buffer_size = cpal::BufferSize::Default;
+            cfg
+        }
+        Err(_) => cpal::StreamConfig { channels: 2, sample_rate: 48000, buffer_size: cpal::BufferSize::Default },
+    };
+    let rate = config.sample_rate;
     let base = base as usize;
     let hdr = move |i: usize| -> &'static AtomicI32 { unsafe { &*((base + ring as usize + 4 * i) as *const AtomicI32) } };
     let data = base + ring as usize + 64;
@@ -71,8 +107,8 @@ fn play(ring: u64, capacity: u32) -> anyhow::Result<cpal::Stream> {
             std::thread::sleep(std::time::Duration::from_secs(5));
             let w = hdr(0).load(Ordering::SeqCst) as u32;
             let (u, c) = (UNDERRUN_FRAMES.load(Ordering::Relaxed), CALLBACKS.load(Ordering::Relaxed));
-            eprintln!("[audio] mixer produced {:.0} frames/s (needs 48000), underrun {:.0} frames/s, {} callbacks/s, ring fill {}",
-                w.wrapping_sub(last_w) as f64 / 5.0, (u - last_u) as f64 / 5.0, (c - last_c) / 5, w.wrapping_sub(hdr(1).load(Ordering::SeqCst) as u32));
+            eprintln!("[audio] mixer produced {:.0} frames/s (needs {}), underrun {:.0} frames/s, {} callbacks/s, ring fill {}",
+                w.wrapping_sub(last_w) as f64 / 5.0, rate, (u - last_u) as f64 / 5.0, (c - last_c) / 5, w.wrapping_sub(hdr(1).load(Ordering::SeqCst) as u32));
             last_w = w; last_u = u; last_c = c;
         }
     });

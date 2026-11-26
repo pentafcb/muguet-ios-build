@@ -55,8 +55,16 @@ pub fn bundled_resources() -> Option<PathBuf> {
 fn build_dir(root: &Path) -> Option<PathBuf> {
     let mut builds: Vec<_> = std::fs::read_dir(root.join("b")).ok()?.flatten().map(|e| e.path())
         .filter(|p| p.join("shaders/index.json").is_file()).collect();
-    builds.sort();
-    builds.into_iter().next()
+    // Pick the NEWEST build by game.wasm mtime, not the lexicographically
+    // first: after a re-import b/ can hold two builds, and the oldest
+    // used to win, pairing stale shaders with a current wasm.
+    builds.sort_by_key(|p| {
+        std::fs::metadata(p.join("game.wasm")).and_then(|m| m.modified()).ok()
+    });
+    if builds.len() > 1 {
+        eprintln!("[config] warning: {} builds in b/; using newest {}", builds.len(), builds.last().unwrap().display());
+    }
+    builds.into_iter().next_back()
 }
 
 pub fn validate_game_files() -> anyhow::Result<()> {
@@ -73,10 +81,36 @@ pub fn validate_game_files_with_progress(progress: impl FnMut(usize, usize)) -> 
     let manifest = crate::game_data::load_manifest_with_progress(&root.join("data"), progress)?;
     let build = build_dir(&root).context("Missing shader pack")?;
     let index = build.join("shaders/index.json");
-    anyhow::ensure!(std::fs::metadata(&index)?.len() <= 64 << 20, "Shader index is too large");
-    let shaders: serde_json::Value = serde_json::from_slice(&std::fs::read(index)?).context("Invalid shader index")?;
-    anyhow::ensure!(shaders.as_object().is_some_and(|o| !o.is_empty()), "Shader pack is empty");
-    let _ = crate::game_data::RUNTIME_MANIFEST.set(std::sync::Arc::from(serde_json::to_vec(&manifest)?));
+    // Read with a capped reader instead of metadata-then-read: the file
+    // could grow between the two calls and allocate without a cap.
+    let index_bytes = {
+        use std::io::Read;
+        let mut f = std::fs::File::open(&index)?;
+        let mut buf = Vec::new();
+        f.by_ref().take((64 << 20) + 1).read_to_end(&mut buf)?;
+        anyhow::ensure!(buf.len() <= 64 << 20, "Shader index is too large");
+        buf
+    };
+    let shaders: serde_json::Value = serde_json::from_slice(&index_bytes).context("Invalid shader index")?;
+    let shader_obj = shaders.as_object().context("Shader pack is not an object")?;
+    anyhow::ensure!(!shader_obj.is_empty(), "Shader pack is empty");
+    // Only "non-empty JSON object" used to be checked, so a shader entry
+    // pointing at a missing file was found only at runtime as a black
+    // screen. Validate the entries exist now and name them all at once.
+    let mut missing: Vec<String> = Vec::new();
+    for (name, entry) in shader_obj {
+        let file = entry.get("file").and_then(|v| v.as_str()).unwrap_or(name.as_str());
+        if !build.join("shaders").join(file).is_file() {
+            missing.push(file.to_string());
+            if missing.len() >= 10 { break; }
+        }
+    }
+    anyhow::ensure!(missing.is_empty(), "Shader pack is missing files: {}", missing.join(", "));
+    if crate::game_data::RUNTIME_MANIFEST.set(std::sync::Arc::from(serde_json::to_vec(&manifest)?)).is_err() {
+        // A second validation in one process used to silently discard
+        // the new manifest while io/fs kept serving the old one.
+        eprintln!("[config] warning: runtime manifest was already set; keeping the first one");
+    }
     eprintln!("[config] verified game manifest and shader pack");
     Ok(())
 }
@@ -114,6 +148,12 @@ fn redirect_logs_if_detached() {
 
 pub fn setup() -> anyhow::Result<Startup> {
     redirect_logs_if_detached();
+    // support_dir() silently falls back to /tmp when HOME is unset; on
+    // iOS that would write saves/config into a purgeable tmp dir. Fail
+    // loudly instead of losing the user's data silently.
+    if cfg!(target_os = "ios") && std::env::var_os("HOME").is_none() {
+        anyhow::bail!("HOME is not set; cannot locate the Muguet documents folder");
+    }
     let support = support_dir();
     std::fs::create_dir_all(support.join("saves"))?;
 
@@ -129,8 +169,20 @@ pub fn setup() -> anyhow::Result<Startup> {
     let build = locate();
     #[cfg(not(target_os = "ios"))]
     let build = build?;
+    // A locate() failure used to be swallowed to an empty path on iOS,
+    // producing wasm_path "game.wasm" and hiding the real "no game data"
+    // error until a generic loader failure. Propagate it — unless the
+    // game code is embedded in the binary, in which case no wasm_path
+    // is needed at all and the launcher flow re-validates the data.
     #[cfg(target_os = "ios")]
-    let build = build.unwrap_or_default();
+    let build = match build {
+        Ok(b) => b,
+        Err(e) if crate::code_embedded() => {
+            eprintln!("[config] {e:#} (game code is embedded; continuing)");
+            PathBuf::new()
+        }
+        Err(e) => return Err(e),
+    };
     Ok(Startup { wasm_path: build.join("game.wasm"), cache_dir: support, engine_args })
 }
 
@@ -175,7 +227,7 @@ fn settings(cfg_path: &Path) -> Vec<String> {
     let cfg: serde_json::Value = std::fs::read_to_string(&cfg_path)
         .ok()
         .and_then(|t| serde_json::from_str(&t).map_err(|e| eprintln!("[config] {}: {e}", cfg_path.display())).ok())
-        .unwrap_or_else(|| serde_json::from_str(DEFAULT_CONFIG).unwrap());
+        .unwrap_or_else(|| serde_json::from_str(DEFAULT_CONFIG).expect("DEFAULT_CONFIG is a compile-time constant and must parse"));
     let num = |k: &str| cfg.get(k).and_then(|v| v.as_f64());
     let flag = |k: &str| cfg.get(k).and_then(|v| v.as_bool()).unwrap_or(false);
     if let Some(v) = num("scale") { set_default("MUGUET_SCALE", v.to_string()); }
@@ -226,11 +278,20 @@ fn settings(cfg_path: &Path) -> Vec<String> {
 
     let mut engine_args = Vec::new();
 
-    let fps = std::env::var("MUGUET_FPS").ok().and_then(|v| v.parse::<f64>().ok()).or_else(|| num("fps_limit")).unwrap_or(60.0);
+    // NaN/inf used to flow through unchecked: NaN as i64 is 0 (clamped
+    // to mode 2 only by accident) and fps=inf/1e9 reached the frame
+    // limiter unvalidated. Filter non-finite values and clamp.
+    let fps = std::env::var("MUGUET_FPS").ok().and_then(|v| v.parse::<f64>().ok())
+        .filter(|v| v.is_finite())
+        .or_else(|| num("fps_limit").filter(|v| v.is_finite()))
+        .unwrap_or(60.0).clamp(15.0, 240.0);
     crate::performance::set_frame_limit(fps);
     engine_args.push(format!("-frameLimit={}", crate::performance::engine_frame_limit(fps)));
 
-    let start_mode = std::env::var("MUGUET_START").ok().and_then(|v| v.parse::<f64>().ok()).or_else(|| num("start_mode")).unwrap_or(2.0) as i64;
+    let start_mode = std::env::var("MUGUET_START").ok().and_then(|v| v.parse::<f64>().ok())
+        .filter(|v| v.is_finite())
+        .or_else(|| num("start_mode").filter(|v| v.is_finite()))
+        .unwrap_or(2.0) as i64;
     let start_mode = if (1..=2).contains(&start_mode) { start_mode } else { 2 };
     let mode_name = if start_mode == 1 { "story" } else { "sandbox" };
     set_default("MUGUET_MODE", mode_name);
@@ -314,13 +375,26 @@ const DEFAULT_SAFE_SETTINGS_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?
 "#;
 
 fn find_all_settings_files(dir: &Path) -> Vec<PathBuf> {
+    // Iterative walk with a depth cap and no symlink following: the
+    // recursive version could stack-overflow on a symlink cycle or a
+    // very deep save tree, and collected settings.xml files without
+    // any cap at all.
+    const MAX_DEPTH: usize = 8;
+    const MAX_FILES: usize = 64;
     let mut out = Vec::new();
     if !dir.is_dir() { return out; }
-    if let Ok(entries) = std::fs::read_dir(dir) {
+    let mut stack: Vec<(PathBuf, usize)> = vec![(dir.to_path_buf(), 0)];
+    while let Some((d, depth)) = stack.pop() {
+        if depth > MAX_DEPTH || out.len() >= MAX_FILES { continue; }
+        let Ok(entries) = std::fs::read_dir(&d) else { continue };
         for entry in entries.flatten() {
+            let ft = match entry.file_type() { Ok(t) => t, Err(_) => continue };
+            // Never follow symlinks: a cycle here used to recurse
+            // until the stack overflowed at startup.
+            if ft.is_symlink() { continue; }
             let p = entry.path();
-            if p.is_dir() {
-                out.extend(find_all_settings_files(&p));
+            if ft.is_dir() {
+                stack.push((p, depth + 1));
             } else if p.file_name().and_then(|n| n.to_str()) == Some("settings.xml") {
                 out.push(p);
             }
@@ -431,7 +505,7 @@ pub struct CustomGraphics {
 }
 
 fn set_num(new: &mut String, tag: &str, fix: impl Fn(i64) -> i64) {
-    let re = regex::Regex::new(&format!(r#"<{tag}\s+value="(\d+)"\s*/>"#)).unwrap();
+    let re = regex::Regex::new(&format!(r#"<{}\s+value="(\d+)"\s*/>"#, regex::escape(tag))).unwrap();
     if let Some(c) = re.captures(new) {
         if let Ok(v) = c[1].parse::<i64>() {
             let to = fix(v);
@@ -444,14 +518,14 @@ fn set_num(new: &mut String, tag: &str, fix: impl Fn(i64) -> i64) {
 }
 
 fn set_float(new: &mut String, tag: &str, target: f64) {
-    let re = regex::Regex::new(&format!(r#"<{tag}\s+value="[^"]*"\s*/>"#)).unwrap();
+    let re = regex::Regex::new(&format!(r#"<{}\s+value="[^"]*"\s*/>"#, regex::escape(tag))).unwrap();
     if re.is_match(new) {
         *new = re.replace(new, format!(r#"<{tag} value="{target:.6}" />"#).as_str()).into_owned();
     }
 }
 
 fn set_bool(new: &mut String, tag: &str, target: bool) {
-    let re = regex::Regex::new(&format!(r#"<{tag}\s+value="(?:true|false|\d+)"\s*/>"#)).unwrap();
+    let re = regex::Regex::new(&format!(r#"<{}\s+value="(?:true|false|\d+)"\s*/>"#, regex::escape(tag))).unwrap();
     let target_str = if target { "true" } else { "false" };
     if re.is_match(new) {
         *new = re.replace(new, format!(r#"<{tag} value="{target_str}" />"#).as_str()).into_owned();

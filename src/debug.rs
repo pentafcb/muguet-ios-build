@@ -47,6 +47,7 @@ struct State {
     prev_peak_tex: u64,
     prev_peak_buf: u64,
     leak_warned: bool,
+    last_persist: Option<Instant>,
     // First sample of this session: (elapsed seconds, footprint MB).
     // The slope is measured from here, so it shows within-session growth
     // rate instead of the level alone.
@@ -65,6 +66,7 @@ static STATE: LazyLock<Mutex<State>> = LazyLock::new(|| {
         prev_peak_tex: 0,
         prev_peak_buf: 0,
         leak_warned: false,
+        last_persist: None,
         first_sample: None,
     })
 });
@@ -107,13 +109,15 @@ pub fn init() {
     }
     {
         let mut st = lock_state();
-        st.run = runs + 1;
+        // A corrupt muguet-debug.json with runs near u64::MAX used to
+        // wrap the counter back to 0 on the next launch.
+        st.run = runs.saturating_add(1);
         st.prev_peak_tex = prev_tex;
         st.prev_peak_buf = prev_buf;
         st.peak_tex = prev_tex;
         st.peak_buf = prev_buf;
     }
-    persist_json(runs + 1, prev_tex, prev_buf);
+    persist_json(runs.saturating_add(1), prev_tex, prev_buf);
     if enabled() {
         log_line(&format!("debug run {} started (previous runs: {runs}, previous peak tex {prev_tex} buf {prev_buf})", runs + 1));
     }
@@ -130,6 +134,11 @@ fn write_debug_log(msg: &str) {
     let Some(dir) = documents_dir() else { return };
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.join("muguet-debug.log");
+    // Rotate at 1 MiB: with 2 s samples + 1 s pad logs the debug log
+    // used to grow without bound on a nearly-full device.
+    if std::fs::metadata(&path).map(|m| m.len() > 1 << 20).unwrap_or(false) {
+        let _ = std::fs::rename(&path, dir.join("muguet-debug-prev.log"));
+    }
     let elapsed = lock_state().started.elapsed().as_secs_f64();
     let line = format!("[{elapsed:.1}s] {msg}\n");
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
@@ -161,16 +170,21 @@ pub extern "C" fn muguet_debug_log(msg: *const std::ffi::c_char) {
 fn sample_inner(footprint_mb: u64, available_mb: u64, heap_mb: u64, gpu: Option<GpuSample>, forced: bool) {
     let mut warn: Option<String> = None;
     let mut line: Option<String> = None;
+    // persist_json does file I/O (write + create_dir_all) and used to
+    // run while holding STATE, stalling snapshot_text() (panic hook,
+    // memory warning) on every new texture peak while streaming.
+    // Record the need here and flush after the lock is dropped.
+    let mut persist = false;
     {
         let mut st = lock_state();
         if let Some(g) = gpu {
             if g.textures > st.peak_tex {
                 st.peak_tex = g.textures;
-                persist_json(st.run, st.peak_tex, st.peak_buf);
+                persist = true;
             }
             if g.buffers > st.peak_buf {
                 st.peak_buf = g.buffers;
-                persist_json(st.run, st.peak_tex, st.peak_buf);
+                persist = true;
             }
             if !st.leak_warned {
                 if st.prev_peak_tex > 0 && g.textures > st.prev_peak_tex {
@@ -223,6 +237,23 @@ fn sample_inner(footprint_mb: u64, available_mb: u64, heap_mb: u64, gpu: Option<
     }
     if let Some(l) = line {
         log_line(&l);
+    }
+    if persist {
+        // Throttled to at most once per 2 s, outside the STATE lock.
+        let due = {
+            let mut st = lock_state();
+            let now = Instant::now();
+            let due = st.last_persist.map(|t| now.duration_since(t) >= Duration::from_secs(2)).unwrap_or(true);
+            if due { st.last_persist = Some(now); }
+            due
+        };
+        if due {
+            let (run, peak_tex, peak_buf) = {
+                let st = lock_state();
+                (st.run, st.peak_tex, st.peak_buf)
+            };
+            persist_json(run, peak_tex, peak_buf);
+        }
     }
 }
 

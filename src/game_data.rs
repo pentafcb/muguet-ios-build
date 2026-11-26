@@ -42,8 +42,13 @@ pub fn load_manifest_with_progress(data: &Path, mut progress: impl FnMut(usize, 
     let mut manifest: Value = serde_json::from_slice(&std::fs::read(path)?).context("Invalid game manifest")?;
     let files = manifest.get_mut("files").and_then(Value::as_array_mut).context("Game manifest has no files list")?;
     anyhow::ensure!(!files.is_empty(), "Game data is empty. Import a complete compatible game.zip");
+    // Cap before with_capacity: a malicious manifest claiming millions
+    // of entries used to pre-allocate proportionally before any entry
+    // was validated.
+    anyhow::ensure!(files.len() <= 1_000_000, "Game manifest has too many files");
     let mut kept = Vec::with_capacity(files.len());
     let mut adjusted = 0;
+    let mut missing: Vec<String> = Vec::new();
     let total = files.len();
     progress(0, total);
     for (index, mut record) in files.drain(..).enumerate() {
@@ -62,7 +67,13 @@ pub fn load_manifest_with_progress(data: &Path, mut progress: impl FnMut(usize, 
                 adjusted += 1;
                 continue;
             }
-            Err(error) => return Err(error).with_context(|| format!("Game data missing: {name}")),
+            // One missing file used to abort the whole validation, so
+            // the user fixed one file at a time. Collect them all and
+            // report the list together at the end.
+            Err(_) => {
+                missing.push(name);
+                continue;
+            }
         };
         anyhow::ensure!(metadata.is_file(), "Game data is not a file: {name}");
         let trimmed_dlc = name.eq_ignore_ascii_case("common/data/dlcList.xml");
@@ -73,6 +84,11 @@ pub fn load_manifest_with_progress(data: &Path, mut progress: impl FnMut(usize, 
             adjusted += 1;
         }
         kept.push(record);
+    }
+    if !missing.is_empty() {
+        let shown: Vec<&str> = missing.iter().take(10).map(String::as_str).collect();
+        anyhow::bail!("Game data missing ({} files): {}{}", missing.len(), shown.join(", "),
+            if missing.len() > 10 { ", …" } else { "" });
     }
     anyhow::ensure!(!kept.is_empty(), "Game data contains no runtime files. Import a complete compatible game.zip");
     *files = kept;
