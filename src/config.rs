@@ -97,11 +97,23 @@ pub fn validate_game_files_with_progress(progress: impl FnMut(usize, usize)) -> 
     // Only "non-empty JSON object" used to be checked, so a shader entry
     // pointing at a missing file was found only at runtime as a black
     // screen. Validate the entries exist now and name them all at once.
+    // NOTE: index entries carry no "file" field, and the runtime loads
+    // shaders/<hash>.wgsl (gpu.rs load_program) — so the file to check
+    // is <hash>.wgsl, not the bare hash. Checking the bare hash failed
+    // every install even with a complete pack, because no such files
+    // exist in the shader pack. Entries with ok:false are never loaded,
+    // so they are skipped here too.
     let mut missing: Vec<String> = Vec::new();
     for (name, entry) in shader_obj {
-        let file = entry.get("file").and_then(|v| v.as_str()).unwrap_or(name.as_str());
-        if !build.join("shaders").join(file).is_file() {
-            missing.push(file.to_string());
+        if entry.get("ok").and_then(|v| v.as_bool()) == Some(false) {
+            continue;
+        }
+        let file = match entry.get("file").and_then(|v| v.as_str()) {
+            Some(f) => f.to_string(),
+            None => format!("{name}.wgsl"),
+        };
+        if !build.join("shaders").join(&file).is_file() {
+            missing.push(file);
             if missing.len() >= 10 { break; }
         }
     }
