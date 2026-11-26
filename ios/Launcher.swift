@@ -518,7 +518,7 @@ let HUD_BUTTON_DEFS: [HUDButtonDef] = [
     HUDButtonDef(id: 6, name: "COVER (Núp / Radio)", label: "COVER", anchorType: .topRight, baseOffset: CGPoint(x: 84, y: 30), baseRadius: 22),
     HUDButtonDef(id: 7, name: "CROUCH (Ngồi / Nhìn sau)", label: "CROUCH", anchorType: .topRight, baseOffset: CGPoint(x: 138, y: 30), baseRadius: 22),
     HUDButtonDef(id: 8, name: "CAM (Góc camera)", label: "CAM", anchorType: .topRight, baseOffset: CGPoint(x: 192, y: 30), baseRadius: 22),
-    HUDButtonDef(id: 9, name: "MENU (Muguet Menu)", label: "MENU", anchorType: .topRight, baseOffset: CGPoint(x: 246, y: 30), baseRadius: 22),
+    HUDButtonDef(id: 9, name: "MENU (GTA V Menu)", label: "MENU", anchorType: .topRight, baseOffset: CGPoint(x: 246, y: 30), baseRadius: 22),
     HUDButtonDef(id: 10, name: "PAUSE (Tạm dừng)", label: "PAUSE", anchorType: .topLeft, baseOffset: CGPoint(x: 30, y: 30), baseRadius: 22),
     HUDButtonDef(id: 11, name: "PHONE (Điện thoại)", label: "PHONE", anchorType: .topLeft, baseOffset: CGPoint(x: 84, y: 30), baseRadius: 22),
     HUDButtonDef(id: 12, name: "MENU KEYS (Phím mũi tên)", label: "MENU\nKEYS", anchorType: .topLeft, baseOffset: CGPoint(x: 138, y: 30), baseRadius: 22),
@@ -1040,7 +1040,7 @@ struct LauncherView: View {
     var body: some View {
         HStack(spacing: 0) {
             VStack(spacing: 16) {
-                Text(isOverlay ? "Muguet Menu" : "Muguet").font(.largeTitle.weight(.bold))
+                Text(isOverlay ? "GTA V Menu" : "GTA V").font(.largeTitle.weight(.bold))
                 if !muguet_has_game_code() {
                     Text("This build has no game code: build it with ./make-ios.sh <game.zip>.")
                         .foregroundStyle(.red).font(.callout).multilineTextAlignment(.center)
@@ -1515,12 +1515,12 @@ struct LauncherView: View {
 
                 Section("Save Data") {
                     Button("Share / Backup saves") { shareSaves() }
-                    Text("In game: save via Phone > Quick Save, or Pause > Game > Save Game. Saves are stored in Files app > On My iPhone > Muguet > saves.")
+                    Text("In game: save via Phone > Quick Save, or Pause > Game > Save Game. Saves are stored in Files app > On My iPhone > GTA V > saves.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("Diagnostics") {
                     Button("Share startup / memory logs") { shareDiagnostics() }
-                    Text("After a crash, reopen Muguet and share the previous log. Logs contain connection addresses and runtime errors, not game files.")
+                    Text("After a crash, reopen GTA V and share the previous log. Logs contain connection addresses and runtime errors, not game files.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
@@ -1564,7 +1564,7 @@ struct LauncherView: View {
                     Text("💡 Hướng dẫn cài đặt nhanh qua ứng dụng Tệp:")
                         .font(.caption.bold())
                         .foregroundStyle(.orange)
-                    Text("1. Giải nén file zip chứa data trên máy tính hoặc app Tệp.\n2. Mở app Tệp (Files) > Trên iPhone/iPad > Muguet.\n3. Tạo thư mục tên là 'game' (chữ thường).\n4. Dán 2 thư mục 'data' và 'b' vào bên trong thư mục 'game'.")
+                    Text("1. Giải nén file zip chứa data trên máy tính hoặc app Tệp.\n2. Mở app Tệp (Files) > Trên iPhone/iPad > GTA V.\n3. Tạo thư mục tên là 'game' (chữ thường).\n4. Dán 2 thư mục 'data' và 'b' vào bên trong thư mục 'game'.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     Divider().padding(.vertical, 2)
@@ -1729,7 +1729,7 @@ public func muguetOpenMenu() {
         var presenter = root
         while let child = presenter.presentedViewController { presenter = child }
 
-        let alert = UIAlertController(title: "Muguet Menu", message: nil, preferredStyle: .alert)
+        let alert = UIAlertController(title: "GTA V Menu", message: nil, preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "Tiếp tục chơi", style: .cancel))
 
         alert.addAction(UIAlertAction(title: "Chỉnh vị trí & kích thước nút (HUD)", style: .default, handler: { _ in
