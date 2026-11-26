@@ -40,7 +40,6 @@ struct State {
     run: u64,
     started: Instant,
     last_sample: Option<Instant>,
-    last_pad_log: Option<Instant>,
     last_gpu: Option<GpuSample>,
     peak_tex: u64,
     peak_buf: u64,
@@ -59,7 +58,6 @@ static STATE: LazyLock<Mutex<State>> = LazyLock::new(|| {
         run: 0,
         started: Instant::now(),
         last_sample: None,
-        last_pad_log: None,
         last_gpu: None,
         peak_tex: 0,
         peak_buf: 0,
@@ -289,20 +287,10 @@ pub fn note_heap_refusal(requested_mb: u64, max_mb: u64, available_mb: u64) {
     ));
 }
 
-pub fn note_pad(raw: (f32, f32), curved: (f64, f64), dt: f64, final_delta: (f64, f64), rate_px_s: f64, aimed: bool) {
-    if !enabled() {
-        return;
-    }
-    {
-        let mut st = lock_state();
-        let now = Instant::now();
-        if st.last_pad_log.map(|t| now.duration_since(t) < Duration::from_secs(1)).unwrap_or(false) {
-            return;
-        }
-        st.last_pad_log = Some(now);
-    }
-    log_line(&format!(
-        "pad raw ({:.2}, {:.2}) curved ({:.2}, {:.2}) dt {:.4}s rate {rate_px_s:.0} px/s aimed={aimed} final dx {:.1} dy {:.1}",
-        raw.0, raw.1, curved.0, curved.1, dt, final_delta.0, final_delta.1
-    ));
+pub fn note_pad(_raw: (f32, f32), _curved: (f64, f64), _dt: f64, _final_delta: (f64, f64), _rate_px_s: f64, _aimed: bool) {
+    // Was a 1/s pad log; it filled half of muguet-debug.log and the
+    // gamepad sensitivity question it served is closed (look base 1400
+    // px/s, pad sens 2, verified live). The debug log keeps only run
+    // samples, warnings and crash info now. Signature kept so callers
+    // in pad.rs need no change.
 }

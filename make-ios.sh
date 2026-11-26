@@ -26,10 +26,15 @@ fi
 # NOTE: there used to be a HEAP_GB / MUGUET_IOS_HEAP_GB knob here (8 paid,
 # 5 free) that no code ever read — the heap cap lives in
 # src/performance.rs (IOS_HEAP_MAX, 3 GB) and the runtime env override
-# MUGUET_HEAP_GB_MB. Worse, Muguet-free.entitlements has no
-# increased-memory-limit entitlement, so a free/sideload build jetsams
-# well below 3 GB whatever this script says. Do not re-add the knob
-# without wiring it into performance.rs and the entitlements.
+# MUGUET_HEAP_GB_MB. Do not re-add the knob without wiring it into
+# performance.rs and the entitlements.
+# NOTE: Muguet-free.entitlements carries increased-memory-limit (free
+# Apple IDs can get it; extended-virtual-addressing is paid-only, and on
+# iOS 16+ the increased one also lifts the address-space limit). The
+# --ipa build ad-hoc signs with Muguet-sideload.entitlements, which has
+# both — but the entitlement only lives if the installer re-signing the
+# IPA (E-Sign, AltStore, ...) requests it on the App ID. Dying at ~2.7 GB
+# footprint means the installed app was signed without it.
 TOOLCHAIN=1.98.1
 export PATH="/opt/homebrew/opt/rustup/bin:$PATH"
 export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$HOME=/home --remap-path-prefix=$PWD=/muguet"

@@ -29,6 +29,37 @@ static PENDING_MAILBOX: LazyLock<Mutex<HashSet<u64>>> = LazyLock::new(|| Mutex::
 static ANY_PENDING: AtomicU64 = AtomicU64::new(0);
 static STUB_SEQ: AtomicU64 = AtomicU64::new(0);
 
+// The engine prints *everything* through eng_print, and stderr is dup2'd
+// into muguet-runtime.log, so one chatty engine category turns the log
+// into 27k lines: 8.5k scrCommandHash hash dumps and 4.3k identical
+// carvariations warnings in a single session. Keep the log readable:
+// drop blank lines and the scrCommandHash dumps outright, print any
+// other identical line at most 3 times, then a "(repeated Nx)" summary
+// every 100 occurrences. Real errors, warnings and one-time lines still
+// pass through untouched.
+static ENG_DEDUP: LazyLock<Mutex<HashMap<String, u64>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn eng_print(tag: &str, line: &str) {
+    let line = line.trim_end();
+    if line.is_empty() {
+        return;
+    }
+    if line.contains("scrCommandHash") {
+        return;
+    }
+    let n = {
+        let mut counts = ENG_DEDUP.lock().unwrap_or_else(|e| e.into_inner());
+        let count = counts.entry(line.to_string()).or_insert(0);
+        *count += 1;
+        *count
+    };
+    if n <= 3 {
+        eprintln!("[{tag}] {line}");
+    } else if n % 100 == 0 {
+        eprintln!("[{tag}] (repeated {n}x) {line}");
+    }
+}
+
 thread_local! {
     static PENDING_LONGJMP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static PENDING_UNWIND: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -189,7 +220,7 @@ pub fn call(mut caller: Caller<'_, HostState>, idx: usize, params: &[Val], resul
         "environ_get" => set_int(results, 0),
 
         "wasm_print_line_js" | "wasm_hang_line_js" => {
-            eprintln!("[eng] {}", read_cstr(mem, int(params, 0) as u64));
+            eng_print("eng", &read_cstr(mem, int(params, 0) as u64));
         }
         "wasm_module_int_js" => set_int(results, int(params, 1)),
         "wasm_has_page_js" => set_int(results, 1),
@@ -211,7 +242,7 @@ pub fn call(mut caller: Caller<'_, HostState>, idx: usize, params: &[Val], resul
             write_u64(mem, int(params, 3) as u64, buf.len() as u64);
             let text = String::from_utf8_lossy(&buf);
             for line in text.lines() {
-                eprintln!("[eng:{}] {line}", int(params, 0));
+                eng_print(&format!("eng:{}", int(params, 0)), line);
             }
             set_int(results, 0);
         }
