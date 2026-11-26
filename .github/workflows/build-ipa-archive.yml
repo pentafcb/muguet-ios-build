@@ -1,0 +1,60 @@
+name: Build IPA from archive.org
+
+on: workflow_dispatch
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 360
+    permissions:
+      contents: write
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Select latest Xcode
+      run: |
+        XCODE=$(ls -d /Applications/Xcode*.app | sort -V | tail -1)
+        echo "Using $XCODE"
+        sudo xcode-select -s "$XCODE/Contents/Developer"
+
+    - name: Install deps
+      run: brew install xcodegen binaryen p7zip
+
+    - name: Install Rust 1.98.1 + iOS target
+      run: |
+        rustup toolchain install 1.98.1 --profile minimal
+        rustup default 1.98.1
+        rustup target add aarch64-apple-ios --toolchain 1.98.1
+
+    - name: Download game files from archive.org
+      run: |
+        GAME_ZIP_URL="https://archive.org/download/playgta5-offline/playgta5-offline.zip"
+        echo "downloading game files from archive.org (20 GB, this takes a while)..."
+        curl -L --fail --retry 5 --retry-all-errors -C - -o game.zip "$GAME_ZIP_URL"
+        ls -lh game.zip
+        echo "checking zip contents..."
+        unzip -l game.zip | grep -E "game.wasm|manifest.json|shaders/index.json" | head -20
+
+    - name: Build IPA
+      env:
+        BUNDLE_ID: com.pentaaaa.muguet
+      run: |
+        if [ -f game.zip ]; then
+          ./make-ios.sh game.zip --ipa
+        else
+          ./make-ios.sh --ipa
+        fi
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: Muguet-ipa
+        path: build/Muguet.ipa
+
+    - name: Publish to Releases
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: build-${{ github.run_number }}
+        name: Muguet build ${{ github.run_number }}
+        files: build/Muguet.ipa
+        generate_release_notes: false
