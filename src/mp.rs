@@ -384,7 +384,9 @@ pub fn shutdown() {
     if let Some(net) = *NET.lock().unwrap_or_else(|e| e.into_inner()) {
         let _ = net.sock.send(&proto::packet(proto::BYE, &[]));
         // Wake the mp-net thread out of recv so it can see STOP.
-        let _ = net.sock.shutdown(std::net::Shutdown::Both);
+        // UdpSocket has no shutdown: the receive loop uses a 50 ms read
+        // timeout and checks STOP at the top of every iteration, so it
+        // wakes and exits on its own within ~50 ms of STOP being set.
     }
 }
 
@@ -446,10 +448,16 @@ pub fn key_pressed(code: &str) {
 
 pub fn network_status() -> Option<String> {
     if std::env::var("MUGUET_HOST").is_err() && std::env::var("MUGUET_SERVER").is_err() { return None; }
-    let net = match NET.get() {
-        Some(Some(net)) => net,
-        Some(None) => return Some("Online: invalid or unreachable server address".into()),
-        None => return Some("Online: waiting for game startup".into()),
+    let net = match *NET.lock().unwrap_or_else(|e| e.into_inner()) {
+        Some(net) => net,
+        None => {
+            // NET is a Mutex now, not a OnceLock: None means either "not
+            // tried yet" or "tried and the server was unreachable".
+            // NET_LAST_TRY is set before every build attempt, so it tells
+            // the two apart.
+            let tried = NET_LAST_TRY.lock().unwrap_or_else(|e| e.into_inner()).is_some();
+            return Some(if tried { "Online: invalid or unreachable server address".into() } else { "Online: waiting for game startup".into() });
+        }
     };
     if net.full.load(Ordering::Relaxed) { return Some("Online: room full — retrying".into()); }
     if net.last_server.lock().unwrap_or_else(|e| e.into_inner()).elapsed() > Duration::from_secs(proto::TIMEOUT_SECS) {

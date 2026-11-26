@@ -295,7 +295,7 @@ impl ApplicationHandler for App {
         gpu::request_memory_cleanup();
         let avail_mb = crate::performance::available_memory().unwrap_or(0) >> 20;
         crate::debug::sample_forced(crate::footprint_mb(), avail_mb,
-            crate::RT.get().map(|r| r.mem.data_size() >> 20).unwrap_or(0), None);
+            crate::RT.get().map(|r| (r.mem.data_size() >> 20) as u64).unwrap_or(0), None);
         eprintln!("[memory] iOS warning: {}", crate::debug::snapshot_text());
         // A warning used to be observability only: purge, log, and keep
         // growing until iOS jetsammed the process with no log. If a

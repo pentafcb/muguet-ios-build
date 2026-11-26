@@ -52,7 +52,7 @@ impl Reencode for Patcher {
     fn function_index(&mut self, f: u32) -> Result<u32, Error<Self::Error>> {
         if f >= self.imported_funcs {
             Ok(f.checked_add(self.shift())
-                .ok_or_else(|| anyhow::anyhow!("function index overflows while patching"))?)
+                .ok_or_else(|| Error::UserError(anyhow::anyhow!("function index overflows while patching")))?)
         } else {
             Ok(f)
         }
@@ -71,7 +71,7 @@ impl Reencode for Patcher {
         utils::parse_import_section(self, imports, section)?;
         for (k, (name, _, _)) in HOOKS.iter().enumerate() {
             let ty = self.types.checked_add(k as u32)
-                .ok_or_else(|| anyhow::anyhow!("hook type index overflows while patching"))?;
+                .ok_or_else(|| Error::UserError(anyhow::anyhow!("hook type index overflows while patching")))?;
             imports.import("env", name, wasm_encoder::EntityType::Function(ty));
         }
         Ok(())
@@ -81,7 +81,7 @@ impl Reencode for Patcher {
         utils::parse_export_section(self, exports, section)?;
         for (name, f) in std::mem::take(&mut self.exports) {
             let f = f.checked_add(self.shift())
-                .ok_or_else(|| anyhow::anyhow!("export function index overflows while patching"))?;
+                .ok_or_else(|| Error::UserError(anyhow::anyhow!("export function index overflows while patching")))?;
             exports.export(&name, wasm_encoder::ExportKind::Func, f);
         }
         Ok(())
@@ -96,7 +96,7 @@ impl Reencode for Patcher {
         let mut f = self.new_function_with_parsed_locals(&func)?;
         use wasm_encoder::Instruction as I;
         let call = I::Call(self.imported_funcs.checked_add(hook as u32)
-            .ok_or_else(|| anyhow::anyhow!("hook call index overflows while patching"))?);
+            .ok_or_else(|| Error::UserError(anyhow::anyhow!("hook call index overflows while patching")))?);
         if HOOKS[hook].2 == [Arg::MissingText] {
             // only call out for the listed hashes: text lookups are hot
             for (label, _) in crate::host::MISSING_TEXT {

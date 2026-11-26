@@ -3324,7 +3324,7 @@ impl Gpu {
         }
         enc.copy_buffer_to_buffer(&rb, 0, &map, 0, bytes);
         let done = Arc::new(AtomicBool::new(false));
-        Some(PendingMap { buf: map, done, kind: MapKind::Occlusion { list: out } })
+        Some(PendingMap { buf: map, done, failed: Arc::new(AtomicBool::new(false)), kind: MapKind::Occlusion { list: out } })
     }
     fn on_submitted(&mut self) {
         let unmapped: Vec<usize> = self.pending_maps.iter().enumerate().filter(|(_, m)| matches!(m.kind, MapKind::Occlusion { .. }) && !m.done.load(Ordering::SeqCst)).map(|(i, _)| i).collect();
@@ -3415,7 +3415,7 @@ impl Gpu {
                     height: h,
                     present_mode: if caps.present_modes.contains(&PresentMode::Mailbox) { PresentMode::Mailbox } else { PresentMode::Fifo },
                     desired_maximum_frame_latency: 2,
-                    alpha_mode: caps.alpha_modes.first().copied().unwrap_or(AlphaMode::Opaque),
+                    alpha_mode: caps.alpha_modes.first().copied().unwrap_or(CompositeAlphaMode::Opaque),
                     view_formats: vec![],
                     color_space: SurfaceColorSpace::Auto,
                 });
@@ -3535,7 +3535,7 @@ impl Gpu {
             if crate::performance::available_memory().is_some_and(|a| a < 384 << 20) { request_memory_cleanup(); }
             crate::diagnostics::trim();
             crate::debug::sample(crate::footprint_mb(), crate::performance::available_memory().unwrap_or(0) >> 20,
-                crate::RT.get().map(|r| r.mem.data_size() >> 20).unwrap_or(0), Some(self.counts()));
+                crate::RT.get().map(|r| (r.mem.data_size() >> 20) as u64).unwrap_or(0), Some(self.counts()));
         }
         // Purge throttle: normally 15 s between purges, because a purge
         // flushes and waits up to 2 s for submitted work. But at ~15 MB/s
@@ -3615,7 +3615,7 @@ impl Gpu {
         let after = crate::footprint_mb();
         let remaining = crate::performance::available_memory().unwrap_or(0) >> 20;
         log(&format!("memory cleanup: {before} -> {after} MB, remaining {remaining} MB; cleared {bg_before} bind groups, {} pipelines, {views_cleared} cached views; temporary 30 FPS limit", pipes_before - self.pipelines.len()));
-        crate::debug::sample_forced(after, remaining, crate::RT.get().map(|r| r.mem.data_size() >> 20).unwrap_or(0), Some(self.counts()));
+        crate::debug::sample_forced(after, remaining, crate::RT.get().map(|r| (r.mem.data_size() >> 20) as u64).unwrap_or(0), Some(self.counts()));
     }
 
     fn log_fps(&mut self) {
@@ -3640,7 +3640,7 @@ impl Gpu {
             log(&format!("leak watch: textures live {} (created {} destroyed {}), buffers live {} (created {} destroyed {}), shaders live {}",
                 c.textures, c.tex_created, c.tex_destroyed, c.buffers, c.buf_created, c.buf_destroyed, c.shaders));
             crate::debug::sample(crate::footprint_mb(), crate::performance::available_memory().unwrap_or(0) >> 20,
-                crate::RT.get().map(|r| r.mem.data_size() >> 20).unwrap_or(0), Some(c));
+                crate::RT.get().map(|r| (r.mem.data_size() >> 20) as u64).unwrap_or(0), Some(c));
             self.submits0 = self.submits;
             self.pending_skips0 = self.pending_skips;
             self.passes0 = self.passes;
