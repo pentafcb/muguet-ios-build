@@ -105,6 +105,10 @@ pub fn validate_game_files_with_progress(progress: impl FnMut(usize, usize)) -> 
     // so they are skipped here too.
     let mut missing: Vec<String> = Vec::new();
     for (name, entry) in shader_obj {
+        // The index also carries a "_packs" metadata entry (an array
+        // describing the packed shader blobs), not a shader. Only JSON
+        // objects are shaders; anything else is skipped.
+        let Some(entry) = entry.as_object() else { continue };
         if entry.get("ok").and_then(|v| v.as_bool()) == Some(false) {
             continue;
         }
