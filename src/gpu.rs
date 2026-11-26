@@ -3348,7 +3348,21 @@ impl Gpu {
             crate::debug::sample(crate::footprint_mb(), crate::performance::available_memory().unwrap_or(0) >> 20,
                 crate::RT.get().map(|r| r.mem.data_size() >> 20).unwrap_or(0), Some(self.counts()));
         }
-        if !crate::performance::MEMORY_PRESSURE.load(Ordering::Relaxed) || now.duration_since(self.last_cleanup) < Duration::from_secs(15) { return; }
+        // Purge throttle: normally 15 s between purges, because a purge
+        // flushes and waits up to 2 s for submitted work. But at ~15 MB/s
+        // growth, available memory falls 384 MB -> 0 in ~25 s, so a 15 s
+        // throttle allows at most one purge in the whole crash window.
+        // Under 192 MB available the process is seconds from jetsam, so
+        // allow a purge every 5 s instead. A purge only clears host
+        // caches, never game-owned objects, so an early purge cannot
+        // corrupt the game; the 5 s floor stops purge thrash.
+        let available = crate::performance::available_memory().unwrap_or(u64::MAX);
+        let critical = available < 192 << 20;
+        let throttle = if critical { 5 } else { 15 };
+        if !crate::performance::MEMORY_PRESSURE.load(Ordering::Relaxed) || now.duration_since(self.last_cleanup) < Duration::from_secs(throttle) { return; }
+        if critical {
+            log(&format!("memory cleanup: critical purge (available {} MB, {}s since last)", available >> 20, now.duration_since(self.last_cleanup).as_secs()));
+        }
         crate::performance::MEMORY_PRESSURE.store(false, Ordering::Relaxed);
         self.last_cleanup = now;
         self.pressure_until = Some(now + Duration::from_secs(30));

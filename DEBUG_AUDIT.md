@@ -1,8 +1,20 @@
-# Muguet debug audit — crash after 2–3 runs, gamepad camera, file picker
+# Muguet debug audit — crash 2–3 minutes into a single session, gamepad camera, file picker
 
 Repo: `pentafcb/muguet-ios-build` (fork of `iOSVNNews/muguet-ios-build`),
-head `3b4b7c69`, 2026-10-12. Local edits only — NOT pushed.
-Date: 2026-11-26. No phone test, no IPA build, no game files used.
+head `3b4b7c69`, 2026-10-12. Date: 2026-11-26. No phone test, no IPA
+build, no game files used.
+
+## CORRECTION — the crash timing (2026-11-26 ~01:28 PST)
+
+The first version of this audit, and pushed commit `2ed2c2c`, were built
+on the wrong premise: "crash after 2–3 runs". The user corrected it in
+his words: "I didn't said after 2-3 runs I said after 2-3 minutes of
+playing every time like I open the game and it crashes after 2-3
+minutes never played more than 5". So the crash is: **every session,
+2–3 minutes into ONE play session, never surviving past 5 minutes**.
+Everything in §1, §2, §3 and §7 below is rewritten to that premise.
+The gamepad (§4) and file picker (§5) fixes are unaffected. This
+correction is local only — NOT pushed.
 
 ## 0. Is this the latest from the original creator? No.
 
@@ -12,47 +24,108 @@ notice on 2026-11-18. This repo is the `iOSVNNews/muguet-ios-build`
 rebuild fork, head `3b4b7c69` from 2026-10-12. There is no newer
 original to pull from — everything below is fixed in this fork.
 
-## 1. Crash after 2–3 runs — findings
+## 1. Crash 2–3 minutes into a single session — findings
 
-### 1a. Correction to the first read-only audit
+Corrected premise: the game opens, plays for 2–3 minutes, and crashes
+every time, never past 5 minutes. This is a within-session kill, not a
+cross-launch accumulation. A jetsam kill (iOS killing the app for
+memory) fits it exactly; a Rust panic would leave a crash log, a
+jetsam kill leaves none.
+
+### 1a. What the timing implies — the growth rate
+
+If the process starts with roughly 1.5–2.5 GB of usable headroom
+(device RAM minus OS, Metal, audio and the game heap itself) and dies
+at ~150 s, the footprint is growing at roughly **10–20 MB/s, i.e.
+~600–1200 MB/min**. That is fast. A slow leak (a HashSet entry per
+warning, a log line per frame) cannot do that. Only three things in
+this codebase grow that fast: the wasm game heap (§1e #1), game-owned
+GPU textures/buffers streamed in as the world loads (§1e #2), and
+host-side per-frame allocations that are retained, not freed (§1e #3).
+
+### 1b. Purge timing vs a 150 s crash — the math
+
+`gpu.rs` `check_memory()` runs every GPU loop iteration, but it only
+samples once a second, and it only asks for a purge when available
+memory falls under 384 MB. The purge itself is throttled: at most one
+every 15 s (now 5 s when available is under 192 MB — see §3 #7).
+At ~15 MB/s, available memory falls 384 MB → 0 in ~25 s, so the old
+15 s throttle allowed at most one purge in the whole crash window.
+Worse, a purge only clears **host caches** (bind groups, pipelines,
+compute, cached views, uniform ring). It never frees a texture or
+buffer the game still owns by id, and it never shrinks the wasm heap.
+So if the growth is game-owned (§1e #1–2), the purge frees almost
+nothing and the footprint keeps climbing ~15 MB/s straight into
+jetsam, no matter how often it runs. The purge is a mitigation for
+host-cache growth, not a fix for game-side growth. The debug log's
+slope (§2) is what tells which one it is: a purge that drops the
+footprint shows up as a negative slope; a slope that ignores purges
+means the growth is game-owned.
+
+### 1c. No host timer fires at 2–3 minutes
+
+Checked by grep over `src/*.rs`: there is no host timer, timeout or
+counter anywhere near 120–180 s. The timers that exist are the 45 s
+startup warning (only before the first frame is ever displayed),
+the audio 5 s logger, multiplayer send/look/resend timers (33 ms /
+1 s / 150 ms / 4 s) and a 5 s multiplayer server timeout
+(`proto.rs` `TIMEOUT_SECS = 5`, multiplayer only). None of them can
+cause a single-player crash at 2–3 minutes. The trigger is therefore
+almost certainly game-side: the point where streaming a new area,
+compiling a burst of shaders, or growing the heap past a limit
+collides with the memory ceiling. Do not invent a host timer that
+is not in the code.
+
+### 1d. Correction to the first read-only audit
 
 The first audit said `memory_warning` sets a flag with "no real purge".
 That was wrong. `gpu.rs` `check_memory()` **does** purge: on
-`MEMORY_PRESSURE` (throttled to 15 s) it flushes, waits up to 2 s for
-submitted work, clears `bind_groups`, drops finished pipelines,
-clears `compute`, `bgl_cache`, shader program variants and uniform
-slots, then logs `memory cleanup: {before} -> {after} MB`.
-`prune_graphics_cache()` also runs every 120 presents on iOS.
-The problem is not "no purge" — it is that the purge fires too late
-and misses several caches. The fixes below target exactly that.
+`MEMORY_PRESSURE` it flushes, waits up to 2 s for submitted work,
+clears `bind_groups`, drops finished pipelines, clears `compute`,
+`bgl_cache`, shader program variants and uniform slots, then logs
+`memory cleanup: {before} -> {after} MB`. `prune_graphics_cache()`
+also runs every 120 presents on iOS. The problem is not "no purge" —
+it is that the purge fires too late, is throttled, and cannot free
+game-owned memory. The fixes below target exactly that.
 
-### 1b. Leak suspects (file + function + why it grows)
+### 1e. Leak suspects, re-ranked for a 150 s in-session kill
 
 | # | Location | Problem |
 |---|----------|---------|
-| 1 | `src/gpu.rs` `set_obj()` | Overwrote an old `Tex`/`Buf` without destroying it. Dropping the wrapper leaves the wgpu texture/buffer alive while cached bind groups still reference it. **Fixed**: `set_obj()` now calls the existing `destroy()` first. |
-| 2 | `src/gpu.rs` `check_memory()` | Purge only ran when available memory fell under **192 MB** — close to jetsam already — and only every 15 s. **Fixed**: trigger raised to 384 MB. |
-| 3 | `src/gpu.rs` `check_memory()` | Purge never cleared per-texture cached views (`Tex.views`, `ViewObj.views`), `blit_bg`, `mip_passes`, or `dummy_tex`. Each cached `TextureView` pins its texture. **Fixed**: all cleared on purge. They are rebuilt on demand (get-or-create in the view accessors, `mip_passes` at `gpu.rs:2915`). |
-| 4 | `src/gpu.rs` `log_once()` / `LOGGED` | `LOGGED: HashSet<String>` only ever grew — one entry per unique warning for the whole session. **Fixed**: capped at 1024 entries (clears, then re-logs) and cleared on purge. |
-| 5 | `src/main.rs` `load_module()` (jit) | Every game update wrote a new `game-<len>-<stamp>-<key>.cwasm` (multi-hundred MB) and never deleted the old ones — disk growth across runs. **Fixed**: old `game-*.cwasm` files are deleted when a new one is written, keeping only the latest. |
-| 6 | `src/gpu.rs` `objs: Vec<Option<Obj>>` | Never compacts, and the host can never free a texture/buffer the game still owns by id. If the game wasm creates object ids monotonically without destroying them, live GPU objects grow for the whole session. Not directly fixable host-side — now **visible** via the leak counters (below). |
-| 7 | `src/host.rs` `resize_heap()` | The wasm heap only grows, never shrinks (wasm memory cannot shrink). Growth refusals now log the run number and GPU counts (`src/debug.rs` `note_heap_refusal()`). |
-| 8 | `src/main.rs` `Runtime` (`OnceLock`) + `spawn_pthread()` | Engine, module and shared memory live for the whole process; pthread `Store`+`Instance` pairs are never joined. By design — the process exits when the engine returns. |
-| 9 | `src/audio.rs` `STARTED` (once-only), stream parked forever | Process-lifetime by design; the process exits at engine end, so this is not a cross-launch leak. Not changed. |
-| 10 | `src/io.rs` `serve_loop()` open-file map, `MAX_OPEN = 1024` | Bounded, but when full it closes the **whole** map at once. Suspect, not changed (needs a phone repro first). |
-| 11 | `src/fs.rs` `FS` open fds | Closed only on explicit `fd_close` from the game. Game-owned; not changed. |
-| 12 | `src/mp.rs` `NET` peers/shots | Capped (peers 64, snaps 20 per peer) — bounded, not a suspect. |
-| 13 | `src/diagnostics.rs` | No run counter, no memory history, no GPU counts; a jetsam kill is not a Rust panic so it leaves no crash log at all. **Fixed** by the debug tools below. |
+| 1 | `src/host.rs` `resize_heap()` + `src/main.rs` `heap_type()` / `src/performance.rs` `ios_heap_budget()` | **Most likely.** The wasm heap only grows, never shrinks, and is capped at `IOS_HEAP_MAX` 3072 MB (65% of physical). GTA streams the world into the heap; once it approaches the cap, `growth_fits` refuses and `resize_heap` returns false — the game then traps/aborts, or jetsam takes the process first. If the heap grows ~10 MB/s from a ~1.5 GB start, it hits the cap at ~150 s. A purge cannot help: it never shrinks the heap. **Not fixed, only instrumented** — refusals log run + GPU counts + elapsed (`src/debug.rs` `note_heap_refusal()`). Visible in the log as `heap` climbing steadily while `tex live` stays flat. |
+| 2 | `src/gpu.rs` `objs: Vec<Option<Obj>>` + `create_texture()` / `create_buffer()` | **Second most likely.** The game creates texture/buffer ids as it streams new areas; the host can never free one the game still owns by id. If GTA never destroys old area textures while driving, live tex count climbs linearly with distance travelled — hundreds of MB in 2–3 min of driving. **Not directly fixable host-side** — now visible via the leak counters and the slope (§2). Visible as `tex live` climbing with `created − destroyed ≈ live`. |
+| 3 | `src/gpu.rs` `uniform_alloc()` / `ubo_shared` + `pack_copy()` | Per-frame uniform data is copied into a ring; if one frame needs more than `RING_CHUNK` 8 MB, a NEW 24 MB buffer (8 MB × 3 frame slots) is allocated and retained in `ubo_shared`, plus a CPU staging `Vec` per chunk per slot (up to 8 MB each). Only freed on purge. A uniform-heavy scene can add 24 MB per chunk-growth event. Demoted vs #1–2: bounded by per-frame uniform volume, and the purge does clear it. |
+| 4 | `src/gpu.rs` `stage_bind_group()` + `get_pipeline()` | **Verified per-scene, NOT per-frame.** The bind-group key is (layout, shader uid, chunk id, texture/buffer/sampler ids, offsets) — the chunk id is stable per chunk index and the uniform offset rides in `dyn_off`, not the key. New bind groups appear only for new shader/texture/state combos, i.e. new areas. Pruned every 120 presents down to `BG_LIMIT` 4096 / `PIPE_LIMIT` 4096, so it plateaus at the limit instead of growing forever. Demoted: contributes at most a plateau, not a 150 s ramp. |
+| 5 | `src/gpu.rs` `upload_buffer()` / `upload_texture()` + `bc_decode()` | Every upload does `bytes().to_vec()`, and BC textures get a full decoded `Vec` (a 1024×1024 BC7 texture decodes to 4 MB) plus half/a8 conversions — per upload, per frame. These are transient (freed after `write_texture`), so they cause allocator churn and raise the peak RSS the jetsam limit is measured against, not a monotonic leak. Not fixed (would need a staging pool); the slope log shows whether the climb is steady (retained) or spiky (transient). |
+| 6 | `src/gpu.rs` `set_obj()` | **Fixed** — destroys the old `Tex`/`Buf` before overwriting. Was a real leak, but one object id at a time — far too slow to kill a session in 150 s on its own. Kept as a fix, demoted as the cause. |
+| 7 | `src/gpu.rs` `check_memory()` purge | **Fixed in part** — trigger 192 → 384 MB, clears cached views / `blit_bg` / `mip_passes` / `dummy_tex` / `LOGGED`, throttle now 5 s under 192 MB available. Still cannot free game-owned memory (§1b above). |
+| 8 | `src/gpu.rs` `log_once()` / `LOGGED` | **Fixed** — capped at 1024 entries. Far too slow to matter at 150 s; hygiene only. |
+| 9 | `src/main.rs` `load_module()` (jit) stale `.cwasm` | **Fixed** — deletes old `game-*.cwasm` files, keeping only the latest. **Demoted: this is DISK growth across game updates, once per launch at most.** The file is written once at load, before play starts. It cannot cause a crash 2–3 minutes into a session. Kept as hygiene, explicitly NOT the cause. |
+| 10 | `src/main.rs` `Runtime` (`OnceLock`) + `spawn_pthread()` | Engine, module and shared memory live for the whole process; pthread `Store`+`Instance` pairs are never joined. By design, process-lifetime; cannot grow minute by minute after startup. Not a suspect. |
+| 11 | `src/audio.rs` `STARTED` (once-only), stream parked forever | Process-lifetime by design. Not a suspect. |
+| 12 | `src/io.rs` `serve_loop()` open-file map, `MAX_OPEN = 1024` | Bounded, but when full it closes the **whole** map at once. Suspect, not changed (needs a phone repro first). |
+| 13 | `src/fs.rs` `FS` open fds | Closed only on explicit `fd_close` from the game. Game-owned; not changed. |
+| 14 | `src/mp.rs` `NET` peers/shots | Capped (peers 64, snaps 20 per peer) — bounded, not a suspect. |
+| 15 | `src/diagnostics.rs` | No run counter, no memory history, no GPU counts; a jetsam kill is not a Rust panic so it leaves no crash log at all. **Fixed** by the debug tools below. |
 
-### 1c. Open question (still needs the user)
+### 1f. Open questions (revised — run count is no longer relevant)
 
-It is still unknown whether "2–3 times" means 2–3 **app launches** or
-2–3 **in-app game starts**, and no `muguet-runtime.log`,
-`muguet-previous.log` or `muguet-crash.log` has been shared yet, nor
-the iPhone model / RAM / iOS version. That matters: a fresh process per
-launch rules out in-process leaks as the cross-launch cause and points
-at within-session growth (suspects 1–6) or disk accumulation (suspect
-5). The debug log below is designed to answer it.
+The old question — "2–3 app launches or 2–3 in-app starts?" — is
+answered and dead: it is one session, 2–3 minutes in, every time.
+What is still unknown, and what the next phone test must answer:
+- iPhone model / RAM / iOS version (sets the headroom in the §1a math).
+- Does it crash standing still in one spot, or only while driving /
+  flying into new areas? Standing still rules out streaming (§1e #2);
+  moving rules it in.
+- Story Mode or Sandbox? (different streaming / script load).
+- Freeze-then-close, or instant close to the home screen? A freeze
+  first suggests the heap-refusal trap; an instant vanish suggests
+  jetsam.
+- The debug log from ONE session: the slope at 30 / 60 / 90 / 120 s,
+  whether `heap` or `tex live` is climbing, and whether purges bend
+  the slope at all.
+No `muguet-runtime.log`, `muguet-previous.log` or `muguet-crash.log`
+has been shared yet.
 
 ## 2. Debug tools added
 
@@ -65,11 +138,18 @@ flag is read at startup.
   every launch, even with debug off, so refusals and panics can always
   name the run number.
 - **Per-run log** — `Documents/muguet-debug.log`, one line per sample:
-  `sample run 3 footprint 1842 MB avail 512 MB heap 1200 MB | tex live
-  1234 (created 5000 destroyed 3766) | buf live 89 (created 900
-  destroyed 811) | shaders 12 pipes 340 bg 1200 draws 99999 presents 12345`.
-  Sampled every 5 s from `gpu.rs` `check_memory()` and on every iOS
-  memory warning (`app.rs` `memory_warning()`).
+  `sample run 3 t 90s footprint 1842 MB avail 512 MB heap 1200 MB
+  slope 900 MB/min | tex live 1234 (created 5000 destroyed 3766) |
+  buf live 89 (created 900 destroyed 811) | shaders 12 pipes 340 bg
+  1200 draws 99999 presents 12345`. Sampled every **2 s** from
+  `gpu.rs` `check_memory()` (was 5 s — a 150 s session only gives ~30
+  points at 5 s) and on every iOS memory warning (`app.rs`
+  `memory_warning()`). Every line carries elapsed time `t` since
+  session start and the footprint slope in MB/min measured from the
+  first sample (n/a before 30 s of data; negative after a purge means
+  the purge freed memory). The slope, not the level, is the diagnostic:
+  a steady ~600–1200 MB/min slope is a jetsam ramp; a flat slope with
+  a sudden jump is a single streaming/shader burst.
 - **Leak counters** — `TEX_CREATED`/`TEX_DESTROYED`,
   `BUF_CREATED`/`BUF_DESTROYED`, `SHADER_CREATED`/`SHADER_DESTROYED`
   (`src/gpu.rs`), incremented in `create_texture` / `create_buffer` /
@@ -78,9 +158,9 @@ flag is read at startup.
   textures/buffers exceed the previous run's peak, the debug log gets
   one `LEAK WATCH: … exceed previous run peak …` line per run.
 - **Panic hook** — `src/diagnostics.rs` now dumps the snapshot
-  (`run | footprint | avail | heap | tex buf shaders pipes bg draws
-  presents`) into `muguet-crash.log` and stderr. Note: a jetsam kill
-  still leaves no crash log — that is why the 5 s samples matter.
+  (`run | t | footprint | avail | heap | tex buf shaders pipes bg
+  draws presents`) into `muguet-crash.log` and stderr. Note: a jetsam
+  kill still leaves no crash log — that is why the 2 s samples matter.
 - **Heap refusals** — `src/host.rs` `resize_heap()` logs run number +
   GPU counts via `debug::snapshot_text()` / `note_heap_refusal()`.
 - **Snapshot function** — `debug::snapshot_text()` is callable from
@@ -98,14 +178,21 @@ flag is read at startup.
 1. `src/gpu.rs` `set_obj()` destroys the previous `Tex`/`Buf` via the
    existing `destroy()` before overwriting.
 2. `src/gpu.rs` `check_memory()` purge trigger 192 MB → **384 MB**,
-   still throttled to 15 s with a 30 s / 30 FPS limit after.
+   with a 30 s / 30 FPS limit after each purge. Throttle is 15 s
+   normally, 5 s when available is under 192 MB (see #7).
 3. `src/gpu.rs` `check_memory()` purge now also clears cached texture
    views, `blit_bg`, `mip_passes`, `dummy_tex`, and `LOGGED`, and logs
    how many bind groups / pipelines / views were cleared.
 4. `src/gpu.rs` `log_once()` `LOGGED` set capped at 1024 entries.
 5. `src/main.rs` `load_module()` deletes stale `game-*.cwasm` files,
-   keeping only the latest.
+   keeping only the latest. Hygiene only — **demoted**: disk growth
+   across game updates cannot cause a crash 2–3 minutes into a
+   session (§1e #9).
 6. `src/host.rs` heap-growth refusals log run number + GPU counts.
+7. `src/gpu.rs` `check_memory()` purge throttle: still 15 s normally,
+   but 5 s when available memory is under 192 MB, with a `critical
+   purge` log line. A purge only clears host caches, so this buys
+   time — it does not fix game-owned growth (§1b).
 
 Not changed on purpose: game logic, multiplayer, shaders, input
 handling (except the pad fix in §4), audio, `fs.rs`/`io.rs` (bounded
@@ -247,27 +334,38 @@ was already in the UI and is correct; it is unchanged.
 - The Swift changes **cannot** be checked here (no macOS/Xcode); they
   are small and follow the file's existing patterns, but the
   `DocumentPicker` and the slider need the Xcode build to confirm.
+- Revision 2026-11-26 (~01:30 PST): the crash premise was corrected
+  (2–3 minutes into one session, not 2–3 runs). The new code in this
+  revision — 2 s sampling with elapsed + slope in `src/debug.rs`,
+  the 5 s critical purge throttle in `src/gpu.rs` — was verified by
+  re-reading only, same as above. This revision is local only, NOT
+  pushed; pushed commit `2ed2c2c` still carries the old premise in its
+  audit text (the code fixes in it are unaffected).
 - No game run, no IPA build, no `make-ios.sh`. No game files
   downloaded, no GTA assets in the repo.
 
 ## 7. How to test (phone)
 
-### Crash / memory
+### Crash / memory — ONE session, watch the clock
 
 1. Rebuild + install the IPA from this branch (do not use the old
    Build 8.9 IPA — it has none of this).
-2. Play 2–3 sessions the way it used to crash (note whether the crash
-   is after 2–3 **app launches** or 2–3 **in-app starts** — that
-   distinction is still missing).
-3. In Files > Muguet, share `muguet-debug.log`,
+2. Play ONE session the way it used to crash and note the elapsed
+   time to the crash (2 min? 3 min? past 5?). Note whether you were
+   standing still or driving/flying, and Story Mode or Sandbox.
+3. Note how it dies: freeze first and then close, or instant close
+   straight to the home screen?
+4. In Files > Muguet, share `muguet-debug.log`,
    `muguet-runtime.log`, `muguet-previous.log` and `muguet-crash.log`
    (or use the launcher "Share startup / memory logs" button, which
    now includes `muguet-debug.log`).
-4. In `muguet-debug.log`, check: does `tex live` / `buf live` climb
-   every session while `created − destroyed` stays near zero (game
-   leaking ids), or does `created` climb while `destroyed` lags (host
-   not freeing)? A `LEAK WATCH` line means live counts beat the
-   previous run's peak.
+5. In `muguet-debug.log`, read the slope, not the level: is the
+   slope steady at ~600–1200 MB/min from the start (retained leak),
+   flat then a sudden jump (one burst), or negative after a purge
+   (purge worked, growth is elsewhere)? Then check which column
+   climbs with it — `heap` (wasm heap, §1e #1), `tex live`
+   (streaming, §1e #2), or neither (transient uploads, §1e #5).
+   A `LEAK WATCH` line means live counts beat the previous run's peak.
 
 To enable the debug log: `MUGUET_DEBUG=1` must be set at launch. It
 is off by default; there is no in-app toggle yet.
@@ -297,7 +395,9 @@ is off by default; there is no in-app toggle yet.
 ## 8. Files changed
 
 - `src/debug.rs` (new) — run counter, per-run log, sampling, leak
-  watch, snapshot, pad logging, Swift bridge.
+  watch, snapshot, pad logging, Swift bridge. Revised 2026-11-26:
+  2 s sampling (was 5 s), every sample line carries elapsed `t` and
+  the footprint slope in MB/min; `snapshot_text()` also carries `t`.
 - `src/main.rs` — `mod debug`, `debug::init()`, stale `.cwasm`
   cleanup in `load_module()`.
 - `src/diagnostics.rs` — panic hook dumps run + memory + GPU counts.
@@ -306,7 +406,9 @@ is off by default; there is no in-app toggle yet.
 - `src/gpu.rs` — leak counters, `set_obj()` destroys the old object,
   `LOGGED` capped at 1024, purge trigger 192 → 384 MB, purge clears
   cached views / `blit_bg` / `mip_passes` / `dummy_tex` / `LOGGED`
-  and logs what was cleared, `log_fps()` leak line.
+  and logs what was cleared, `log_fps()` leak line. Revised 2026-11-26:
+  purge throttle 15 s normally, 5 s when available is under 192 MB,
+  with a `critical purge` log line.
 - `src/config.rs` — `pad_sensitivity` default 2.0 + `MUGUET_PAD_SENS`
   mapping + reload list.
 - `src/input.rs` — `mouse_sensitivity()` getter for the pad log.

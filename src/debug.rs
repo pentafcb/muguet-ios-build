@@ -1,5 +1,9 @@
 // muguet - debug.rs
-// Developer debug tools for the crash-after-2-3-runs investigation.
+// Developer debug tools for the crash-2-3-minutes-into-a-single-session
+// investigation. Corrected 2026-11-26: the crash is NOT after 2-3 runs.
+// It is every session, 2-3 minutes into one play session, never past 5
+// minutes. So the log is built to show within-session growth rate
+// (footprint slope in MB/min), not cross-run accumulation.
 // All log output is gated behind MUGUET_DEBUG=1 and is off by default in
 // release builds. The only file written without the flag is the tiny run
 // counter (muguet-debug.json), so heap-refusal lines and panic dumps can
@@ -43,6 +47,10 @@ struct State {
     prev_peak_tex: u64,
     prev_peak_buf: u64,
     leak_warned: bool,
+    // First sample of this session: (elapsed seconds, footprint MB).
+    // The slope is measured from here, so it shows within-session growth
+    // rate instead of the level alone.
+    first_sample: Option<(f64, u64)>,
 }
 
 static STATE: LazyLock<Mutex<State>> = LazyLock::new(|| {
@@ -57,6 +65,7 @@ static STATE: LazyLock<Mutex<State>> = LazyLock::new(|| {
         prev_peak_tex: 0,
         prev_peak_buf: 0,
         leak_warned: false,
+        first_sample: None,
     })
 });
 
@@ -175,11 +184,30 @@ fn sample_inner(footprint_mb: u64, available_mb: u64, heap_mb: u64, gpu: Option<
             st.last_gpu = Some(g);
         }
         let now = Instant::now();
-        let due = forced || st.last_sample.map(|t| now.duration_since(t) >= Duration::from_secs(5)).unwrap_or(true);
+        // 2 s cadence, not 5 s: the session dies at ~150 s, so 5 s samples
+        // would give only ~30 points and could miss the final climb.
+        let due = forced || st.last_sample.map(|t| now.duration_since(t) >= Duration::from_secs(2)).unwrap_or(true);
         if !due {
             return;
         }
         st.last_sample = Some(now);
+        let elapsed = st.started.elapsed().as_secs_f64();
+        // Footprint slope in MB/min, measured from the first sample of
+        // this session. Meaningless before 30 s of data, so it reads n/a
+        // until then. A steady ~900 MB/min slope is what a 150 s jetsam
+        // kill looks like; a flat slope with a sudden jump points at a
+        // single burst (streaming / shader compile) instead. A negative
+        // slope after a purge means the purge actually freed memory.
+        let slope = match st.first_sample {
+            Some((t0, fp0)) if elapsed - t0 >= 30.0 => {
+                format!("{:.0} MB/min", (footprint_mb as f64 - fp0 as f64) / (elapsed - t0) * 60.0)
+            }
+            Some(_) => "n/a (<30s)".to_string(),
+            None => {
+                st.first_sample = Some((elapsed, footprint_mb));
+                "n/a (first)".to_string()
+            }
+        };
         let gpu_text = match st.last_gpu {
             Some(g) => format!(
                 "tex live {} (created {} destroyed {}) | buf live {} (created {} destroyed {}) | shaders {} pipes {} bg {} draws {} presents {}",
@@ -188,7 +216,7 @@ fn sample_inner(footprint_mb: u64, available_mb: u64, heap_mb: u64, gpu: Option<
             ),
             None => "gpu n/a".to_string(),
         };
-        line = Some(format!("sample run {} footprint {footprint_mb} MB avail {available_mb} MB heap {heap_mb} MB | {gpu_text}", st.run));
+        line = Some(format!("sample run {} t {elapsed:.0}s footprint {footprint_mb} MB avail {available_mb} MB heap {heap_mb} MB slope {slope} | {gpu_text}", st.run));
     }
     if let Some(w) = warn {
         log_line(&w);
@@ -210,16 +238,16 @@ pub fn snapshot_text() -> String {
     let fp = crate::footprint_mb();
     let av = crate::performance::available_memory().unwrap_or(0) >> 20;
     let heap = crate::RT.get().map(|r| r.mem.data_size() >> 20).unwrap_or(0);
-    let (run, gpu) = match STATE.try_lock() {
-        Ok(st) => (st.run, st.last_gpu),
-        Err(_) => (0, None),
+    let (run, gpu, elapsed) = match STATE.try_lock() {
+        Ok(st) => (st.run, st.last_gpu, st.started.elapsed().as_secs_f64()),
+        Err(_) => (0, None, 0.0),
     };
     match gpu {
         Some(g) => format!(
-            "run {run} | footprint {fp} MB | avail {av} MB | heap {heap} MB | tex {} buf {} shaders {} pipes {} bg {} draws {} presents {}",
+            "run {run} t {elapsed:.0}s | footprint {fp} MB | avail {av} MB | heap {heap} MB | tex {} buf {} shaders {} pipes {} bg {} draws {} presents {}",
             g.textures, g.buffers, g.shaders, g.pipelines, g.bind_groups, g.draws, g.presents
         ),
-        None => format!("run {run} | footprint {fp} MB | avail {av} MB | heap {heap} MB | gpu n/a"),
+        None => format!("run {run} t {elapsed:.0}s | footprint {fp} MB | avail {av} MB | heap {heap} MB | gpu n/a"),
     }
 }
 
