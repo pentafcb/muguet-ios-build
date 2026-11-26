@@ -1,6 +1,13 @@
 name: Build IPA from archive.org
 
-on: workflow_dispatch
+on:
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: "Also publish the IPA as a public GitHub Release (contains game code — leave off unless you mean it)"
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   build:
@@ -27,31 +34,46 @@ jobs:
         rustup default 1.98.1
         rustup target add aarch64-apple-ios --toolchain 1.98.1
 
+    - name: Restore Rust build cache
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target/release
+          target/ios
+        key: muguet-archive-ios-rust1981-${{ hashFiles('Cargo.lock', 'src/**', 'build.rs', 'ios/Launcher.swift', 'vendor/**') }}
+        restore-keys: |
+          muguet-archive-ios-rust1981-
+
     - name: Download game files from archive.org
       run: |
+        set -euo pipefail
         GAME_ZIP_URL="https://archive.org/download/playgta5-offline/playgta5-offline.zip"
         echo "downloading game files from archive.org (20 GB, this takes a while)..."
         curl -L --fail --retry 5 --retry-all-errors -C - -o game.zip "$GAME_ZIP_URL"
         ls -lh game.zip
-        echo "checking zip contents..."
-        unzip -l game.zip | grep -E "game.wasm|manifest.json|shaders/index.json" | head -20
+        echo "94432a5e4538a6ed90a4281ff14a9c5508d147f2  game.zip" | shasum -a 1 -c -
+        echo "checking zip contents (fails fast if any required file is missing)..."
+        unzip -l game.zip | grep -q "b/8b0b5899ed/game.wasm"
+        unzip -l game.zip | grep -q "data/manifest.json"
+        unzip -l game.zip | grep -q "shaders/index.json"
 
     - name: Build IPA
       env:
         BUNDLE_ID: com.pentaaaa.muguet
       run: |
-        if [ -f game.zip ]; then
-          ./make-ios.sh game.zip --ipa
-        else
-          ./make-ios.sh --ipa
-        fi
+        ./make-ios.sh game.zip --ipa
 
     - uses: actions/upload-artifact@v4
       with:
         name: Muguet-ipa
         path: build/Muguet.ipa
+        if-no-files-found: error
+        retention-days: 7
 
     - name: Publish to Releases
+      if: inputs.publish_release
       uses: softprops/action-gh-release@v2
       with:
         tag_name: build-${{ github.run_number }}
