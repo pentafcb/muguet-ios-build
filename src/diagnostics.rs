@@ -14,9 +14,14 @@ pub fn install() {
 
     std::panic::set_hook(Box::new(|info| {
         eprintln!("[CRASH/PANIC] {info}");
+        // A jetsam kill is not a Rust panic and leaves no crash log, but a
+        // panic does: record the run number and the last sampled memory and
+        // GPU counts so the crash file can be matched to muguet-debug.log.
+        let snap = crate::debug::snapshot_text();
+        eprintln!("[CRASH] {snap}");
         if let Some(home) = std::env::var_os("HOME") {
             let crash_log = std::path::PathBuf::from(home).join("Documents/muguet-crash.log");
-            let _ = std::fs::write(crash_log, format!("[CRASH] {info}\n"));
+            let _ = std::fs::write(crash_log, format!("[CRASH] {info}\n[CRASH] {snap}\n"));
         }
     }));
 }

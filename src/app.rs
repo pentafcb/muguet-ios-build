@@ -252,7 +252,9 @@ impl ApplicationHandler for App {
 
     fn memory_warning(&mut self, _el: &ActiveEventLoop) {
         gpu::request_memory_cleanup();
-        eprintln!("[memory] iOS warning: footprint {} MB, remaining {} MB", crate::footprint_mb(), crate::performance::available_memory().unwrap_or(0) >> 20);
+        crate::debug::sample_forced(crate::footprint_mb(), crate::performance::available_memory().unwrap_or(0) >> 20,
+            crate::RT.get().map(|r| r.mem.data_size() >> 20).unwrap_or(0), None);
+        eprintln!("[memory] iOS warning: {}", crate::debug::snapshot_text());
     }
 }
 

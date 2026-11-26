@@ -14,6 +14,7 @@ pub struct Startup {
 const DEFAULT_CONFIG: &str = r#"{
   "scale": 0.5,
   "mouse_sensitivity": 2.0,
+  "pad_sensitivity": 2.0,
   "fullscreen": true,
   "fps_limit": 60,
   "start_mode": 2,
@@ -143,7 +144,7 @@ fn locate() -> anyhow::Result<PathBuf> {
 }
 
 const SETTING_VARS: &[&str] = &[
-    "MUGUET_SCALE", "MUGUET_MOUSE_SENS", "MUGUET_TOUCH_SENS", "MUGUET_AIM_SENS", "MUGUET_AIM_MODE", "MUGUET_FIRE_AIM",
+    "MUGUET_SCALE", "MUGUET_MOUSE_SENS", "MUGUET_PAD_SENS", "MUGUET_TOUCH_SENS", "MUGUET_AIM_SENS", "MUGUET_AIM_MODE", "MUGUET_FIRE_AIM",
     "MUGUET_RES", "MUGUET_FULLSCREEN", "MUGUET_MUTE", "MUGUET_HOST", "MUGUET_SERVER", "MUGUET_ROOM", "MUGUET_NAME", "MUGUET_PVP",
     "MUGUET_MODE", "MUGUET_PROMOTION_SYNC", "MUGUET_DEEP_OPTIMIZATION", "MUGUET_BUTTON_SCALE", "MUGUET_BUTTON_OFFSET_X", "MUGUET_BUTTON_OFFSET_Y",
     "MUGUET_BUTTON_OPACITY", "MUGUET_STICK_OFFSET_X", "MUGUET_STICK_OFFSET_Y"
@@ -179,6 +180,7 @@ fn settings(cfg_path: &Path) -> Vec<String> {
     let flag = |k: &str| cfg.get(k).and_then(|v| v.as_bool()).unwrap_or(false);
     if let Some(v) = num("scale") { set_default("MUGUET_SCALE", v.to_string()); }
     if let Some(v) = num("mouse_sensitivity") { set_default("MUGUET_MOUSE_SENS", v.to_string()); }
+    set_default("MUGUET_PAD_SENS", num("pad_sensitivity").unwrap_or(2.0).clamp(0.1, 10.0).to_string());
     if let Some(v) = num("touch_sensitivity") { set_default("MUGUET_TOUCH_SENS", v.to_string()); }
     set_default("MUGUET_AIM_SENS", num("aim_sensitivity").unwrap_or(0.8).clamp(0.1, 5.0).to_string());
     set_default("MUGUET_AIM_MODE", cfg.get("aim_mode").and_then(|v| v.as_str()).unwrap_or("toggle"));

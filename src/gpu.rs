@@ -41,6 +41,15 @@ pub static SUSPENDED: AtomicBool = AtomicBool::new(false);
 
 pub static PRESENTS: AtomicU64 = AtomicU64::new(0);
 
+// Leak counters: created vs destroyed per GPU object type. Read by the
+// debug sampler (src/debug.rs) and logged every 10 s by log_fps.
+pub static TEX_CREATED: AtomicU64 = AtomicU64::new(0);
+pub static TEX_DESTROYED: AtomicU64 = AtomicU64::new(0);
+pub static BUF_CREATED: AtomicU64 = AtomicU64::new(0);
+pub static BUF_DESTROYED: AtomicU64 = AtomicU64::new(0);
+pub static SHADER_CREATED: AtomicU64 = AtomicU64::new(0);
+pub static SHADER_DESTROYED: AtomicU64 = AtomicU64::new(0);
+
 pub fn request_memory_cleanup() {
     crate::performance::MEMORY_PRESSURE.store(true, Ordering::Relaxed);
 }
@@ -273,7 +282,16 @@ fn texel_bytes(f: TextureFormat) -> u32 {
 
 static LOGGED: LazyLock<Mutex<std::collections::HashSet<String>>> = LazyLock::new(|| Mutex::new(Default::default()));
 fn log_once(key: &str, msg: &str) {
-    if LOGGED.lock().unwrap().insert(key.to_string()) {
+    // Bound the set: a game that logs a new message every frame would
+    // otherwise grow this HashSet without limit for the whole session.
+    // Clearing at 1024 entries only re-logs a message once per 1024 unique
+    // ones, which is acceptable for deduplicated warnings.
+    let mut set = LOGGED.lock().unwrap();
+    if set.len() >= 1024 {
+        set.clear();
+    }
+    if set.insert(key.to_string()) {
+        drop(set);
         log(msg);
     }
 }
@@ -990,6 +1008,12 @@ impl Gpu {
         if self.objs.len() <= i {
             self.objs.resize_with(i + 1, || None);
         }
+        // Re-creating an object id must destroy the previous GPU resource
+        // first: dropping the wrapper alone leaves the wgpu texture or
+        // buffer alive while cached bind groups still reference it.
+        if self.objs[i].is_some() {
+            self.destroy(id);
+        }
         self.objs[i] = Some(o);
     }
     fn tex(&self, id: u32) -> Option<&Tex> {
@@ -1274,8 +1298,9 @@ impl Gpu {
         if self.used(id) { self.flush(); }
         if let Some(o) = self.objs.get_mut(id as usize).and_then(|o| o.take()) {
             match o {
-                Obj::Tex(t) => t.tex.destroy(),
-                Obj::Buf(b) => { if let Some(g) = b.gpu { g.destroy(); } }
+                Obj::Tex(t) => { t.tex.destroy(); TEX_DESTROYED.fetch_add(1, Ordering::Relaxed); }
+                Obj::Buf(b) => { if let Some(g) = b.gpu { g.destroy(); } BUF_DESTROYED.fetch_add(1, Ordering::Relaxed); }
+                Obj::Shader(_) => { SHADER_DESTROYED.fetch_add(1, Ordering::Relaxed); }
                 _ => {}
             }
         }
@@ -1318,6 +1343,7 @@ impl Gpu {
             format: m.format, views: HashMap::new(), a8: m.a8, bc: m.bc, half, enc: 0, in_bg: false, proxy_depth: None, proxy_stencil: None,
             proxy_fdepth: None, proxy_half: None, blit_bg: None, mip_passes: None,
         }));
+        TEX_CREATED.fetch_add(1, Ordering::Relaxed);
     }
 
     fn create_buffer(&mut self, id: u32, size: u32, bind: u32, misc: u32, stride: u32) {
@@ -1334,6 +1360,7 @@ impl Gpu {
             b.gpu = Some(self.device.create_buffer(&BufferDescriptor { label: None, size: b.bytes, usage, mapped_at_creation: false }));
         }
         self.set_obj(id, Obj::Buf(b));
+        BUF_CREATED.fetch_add(1, Ordering::Relaxed);
     }
 
     fn upload_buffer(&mut self, id: u32, offset: u64, size: u64, data_addr: u64, no_overwrite: bool) {
@@ -1416,6 +1443,7 @@ impl Gpu {
         let nin = self.u(p + 4) as u64;
         let sig = (0..nin).map(|i| SigEl { sem: self.u(p + 5 + i * 4), idx: self.u(p + 6 + i * 4), reg: self.u(p + 7 + i * 4) }).collect();
         self.set_obj(id, Obj::Shader(ShaderObj { stage, hash, sig, program: None }));
+        SHADER_CREATED.fetch_add(1, Ordering::Relaxed);
     }
 
     fn create_layout(&mut self, p: u64) {
@@ -3282,12 +3310,43 @@ impl Gpu {
         for (key, _) in pipes.into_iter().take(self.pipelines.len().saturating_sub(PIPE_LIMIT)) { self.pipelines.remove(&key); }
     }
 
+    fn counts(&self) -> crate::debug::GpuSample {
+        let mut tex = 0u64;
+        let mut buf = 0u64;
+        let mut shader = 0u64;
+        for o in self.objs.iter().flatten() {
+            match o {
+                Obj::Tex(_) => tex += 1,
+                Obj::Buf(_) => buf += 1,
+                Obj::Shader(_) => shader += 1,
+                _ => {}
+            }
+        }
+        crate::debug::GpuSample {
+            textures: tex,
+            buffers: buf,
+            shaders: shader,
+            pipelines: self.pipelines.len() as u64,
+            bind_groups: self.bind_groups.len() as u64,
+            draws: self.draws,
+            presents: self.presents,
+            tex_created: TEX_CREATED.load(Ordering::Relaxed),
+            tex_destroyed: TEX_DESTROYED.load(Ordering::Relaxed),
+            buf_created: BUF_CREATED.load(Ordering::Relaxed),
+            buf_destroyed: BUF_DESTROYED.load(Ordering::Relaxed),
+        }
+    }
+
     fn check_memory(&mut self) {
         let now = Instant::now();
         if now.duration_since(self.last_memory_check) >= Duration::from_secs(1) {
             self.last_memory_check = now;
-            if crate::performance::available_memory().is_some_and(|a| a < 192 << 20) { request_memory_cleanup(); }
+            // Ask for a purge while there is still headroom: the old 192 MB
+            // trigger fired when jetsam was already close.
+            if crate::performance::available_memory().is_some_and(|a| a < 384 << 20) { request_memory_cleanup(); }
             crate::diagnostics::trim();
+            crate::debug::sample(crate::footprint_mb(), crate::performance::available_memory().unwrap_or(0) >> 20,
+                crate::RT.get().map(|r| r.mem.data_size() >> 20).unwrap_or(0), Some(self.counts()));
         }
         if !crate::performance::MEMORY_PRESSURE.load(Ordering::Relaxed) || now.duration_since(self.last_cleanup) < Duration::from_secs(15) { return; }
         crate::performance::MEMORY_PRESSURE.store(false, Ordering::Relaxed);
@@ -3298,24 +3357,48 @@ impl Gpu {
         // Finish already submitted work before recycling uniform storage. Never
         // destroy a texture or buffer still owned by the game.
         let _ = self.device.poll(PollType::Wait { submission_index: None, timeout: Some(Duration::from_secs(2)) });
+        let bg_before = self.bind_groups.len();
+        let pipes_before = self.pipelines.len();
         self.bind_groups.clear();
         self.pipelines.retain(|_, p| matches!(p, PipeEntry::Pending));
         self.compute.clear();
         self.bgl_cache.clear();
         self.last_pl = None;
         self.pdirty = true;
-        for obj in self.objs.iter().flatten() {
-            if let Obj::Shader(s) = obj {
-                if let Some(Some(program)) = &s.program { program.variants.borrow_mut().clear(); }
+        // Cached texture views are rebuilt on demand (get-or-create in the
+        // view accessors), so dropping them here is safe and frees the
+        // TextureView handles that otherwise pin old textures alive.
+        let mut views_cleared = 0usize;
+        for obj in self.objs.iter_mut().flatten() {
+            match obj {
+                Obj::Tex(t) => {
+                    views_cleared += t.views.len();
+                    t.views.clear();
+                    t.blit_bg = None;
+                    t.mip_passes = None;
+                }
+                Obj::Srv(v) | Obj::Uav(v) => {
+                    views_cleared += v.views.len();
+                    v.views.clear();
+                }
+                Obj::Shader(s) => {
+                    if let Some(Some(program)) = &s.program { program.variants.borrow_mut().clear(); }
+                }
+                _ => {}
             }
         }
+        self.dummy_tex.clear();
+        LOGGED.lock().unwrap().clear();
         for slot in &mut self.ubo_slots { slot.clear(); }
         self.ubo_shared.clear();
         self.ubo_chunk = 0;
         self.ubo_off = 0;
         self.frame_slot_done.fill(None);
         let _ = self.device.poll(PollType::Poll);
-        log(&format!("memory cleanup: {before} -> {} MB, remaining {} MB; temporary 30 FPS limit", crate::footprint_mb(), crate::performance::available_memory().unwrap_or(0) >> 20));
+        let after = crate::footprint_mb();
+        let remaining = crate::performance::available_memory().unwrap_or(0) >> 20;
+        log(&format!("memory cleanup: {before} -> {after} MB, remaining {remaining} MB; cleared {bg_before} bind groups, {} pipelines, {views_cleared} cached views; temporary 30 FPS limit", pipes_before - self.pipelines.len()));
+        crate::debug::sample_forced(after, remaining, crate::RT.get().map(|r| r.mem.data_size() >> 20).unwrap_or(0), Some(self.counts()));
     }
 
     fn log_fps(&mut self) {
@@ -3336,6 +3419,11 @@ impl Gpu {
                     h.bind_groups.num_kept_from_user, h.samplers.num_kept_from_user, h.render_pipelines.num_kept_from_user,
                     self.objs.iter().filter(|o| o.is_some()).count()));
             }
+            let c = self.counts();
+            log(&format!("leak watch: textures live {} (created {} destroyed {}), buffers live {} (created {} destroyed {}), shaders live {}",
+                c.textures, c.tex_created, c.tex_destroyed, c.buffers, c.buf_created, c.buf_destroyed, c.shaders));
+            crate::debug::sample(crate::footprint_mb(), crate::performance::available_memory().unwrap_or(0) >> 20,
+                crate::RT.get().map(|r| r.mem.data_size() >> 20).unwrap_or(0), Some(c));
             self.submits0 = self.submits;
             self.pending_skips0 = self.pending_skips;
             self.passes0 = self.passes;

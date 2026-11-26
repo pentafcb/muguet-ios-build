@@ -15,6 +15,7 @@ final class Settings: ObservableObject {
     @Published var textures = 0
     @Published var touch = 1.5
     @Published var aimSensitivity = 0.8
+    @Published var padSensitivity = 2.0
     @Published var aimMode = "toggle"
     @Published var fireAim = true
     @Published var mute = false
@@ -116,6 +117,7 @@ final class Settings: ObservableObject {
         if let v = json["texture_quality"] as? Int, (0...2).contains(v) { textures = v }
         if let v = json["touch_sensitivity"] as? Double { touch = max(0.1, min(10.0, v)) }
         if let v = json["aim_sensitivity"] as? Double { aimSensitivity = max(0.1, min(5.0, v)) }
+        if let v = json["pad_sensitivity"] as? Double { padSensitivity = max(0.1, min(10.0, v)) }
         if let v = json["aim_mode"] as? String, ["toggle", "hold"].contains(v) { aimMode = v }
         if let v = json["fire_aim"] as? Bool { fireAim = v }
         if let v = json["mute"] as? Bool { mute = v }
@@ -248,6 +250,7 @@ final class Settings: ObservableObject {
         json["distance_scaling"] = distanceScaling
         json["touch_sensitivity"] = (touch * 100).rounded() / 100
         json["aim_sensitivity"] = (aimSensitivity * 100).rounded() / 100
+        json["pad_sensitivity"] = (padSensitivity * 10).rounded() / 10
         json["aim_mode"] = aimMode
         json["fire_aim"] = fireAim
         json["mute"] = mute
@@ -302,6 +305,8 @@ func muguet_game_ready() -> Bool
 func muguet_has_game_code() -> Bool
 @_silgen_name("muguet_reload_settings")
 func muguet_reload_settings()
+@_silgen_name("muguet_debug_log")
+func muguet_debug_log(_ msg: UnsafePointer<CChar>)
 @_silgen_name("muguet_apply_cheat")
 func muguet_apply_cheat(_ code: UnsafePointer<CChar>)
 @_silgen_name("muguet_is_multiplayer")
@@ -958,6 +963,61 @@ struct HUDEditorView: View {
     }
 }
 
+// UIKit document picker, replacing SwiftUI .fileImporter. The SwiftUI picker
+// swallowed taps on iOS 26: tapping a .zip did nothing and the .failure
+// branch was never handled, so the failure was silent. The UIKit delegate
+// reports a pick, a cancel, and a missing file separately, and errors are
+// surfaced in the launcher instead of disappearing.
+struct DocumentPicker: UIViewControllerRepresentable {
+    @Binding var isPresented: Bool
+    var onPick: (URL) -> Void
+    var onError: (String) -> Void
+
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [UTType.zip], asCopy: true)
+        picker.delegate = context.coordinator
+        picker.allowsMultipleSelection = false
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(isPresented: $isPresented, onPick: onPick, onError: onError)
+    }
+
+    final class Coordinator: NSObject, UIDocumentPickerDelegate {
+        @Binding var isPresented: Bool
+        var onPick: (URL) -> Void
+        var onError: (String) -> Void
+
+        init(isPresented: Binding<Bool>, onPick: @escaping (URL) -> Void, onError: @escaping (String) -> Void) {
+            self._isPresented = isPresented
+            self.onPick = onPick
+            self.onError = onError
+        }
+
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            isPresented = false
+            if let url = urls.first {
+                onPick(url)
+            } else {
+                onError("Picker returned no file.")
+            }
+        }
+
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentAt url: URL) {
+            isPresented = false
+            onPick(url)
+        }
+
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+            isPresented = false
+            "picker cancelled".withCString { muguet_debug_log($0) }
+        }
+    }
+}
+
 struct LauncherView: View {
     @StateObject private var s = Settings()
     @ObservedObject private var importer = Importer.shared
@@ -1214,6 +1274,11 @@ struct LauncherView: View {
                     Slider(value: $s.touch, in: 0.25...6.0, step: 0.25)
                     Text(String(format: "%.2f×", s.touch)).monospacedDigit().frame(width: 55, alignment: .trailing)
                 }
+                HStack {
+                    Text("Gamepad sensitivity")
+                    Slider(value: $s.padSensitivity, in: 0.25...4.0, step: 0.25)
+                    Text(String(format: "%.2f×", s.padSensitivity)).monospacedDigit().frame(width: 55, alignment: .trailing)
+                }
                 Section("Aiming") {
                     Picker("Aim button", selection: $s.aimMode) {
                         Text("Tap to toggle").tag("toggle")
@@ -1455,8 +1520,13 @@ struct LauncherView: View {
             .frame(maxWidth: .infinity)
         }
         .preferredColorScheme(.dark)
-        .fileImporter(isPresented: $picking, allowedContentTypes: [.zip]) { result in
-            if case .success(let url) = result { importer.run(url) }
+        .sheet(isPresented: $picking) {
+            DocumentPicker(isPresented: $picking, onPick: { url in
+                importer.run(url)
+            }, onError: { message in
+                importer.error = "Import failed: \(message)"
+                message.withCString { muguet_debug_log($0) }
+            })
         }
         .sheet(isPresented: $showingCheatSheet) {
             CheatMenuView(onApply: { code in
@@ -1678,7 +1748,7 @@ func resetGraphicsSettings() {
 
 func shareDiagnostics() {
     let folder = configURL.deletingLastPathComponent()
-    let logs = ["muguet-previous.log", "muguet-runtime.log", "muguet-crash.log"].map { folder.appendingPathComponent($0) }
+    let logs = ["muguet-previous.log", "muguet-runtime.log", "muguet-crash.log", "muguet-debug.log"].map { folder.appendingPathComponent($0) }
         .filter { FileManager.default.fileExists(atPath: $0.path) }
     guard !logs.isEmpty,
           let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,

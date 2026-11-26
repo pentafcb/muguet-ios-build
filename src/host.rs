@@ -258,7 +258,8 @@ fn resize_heap(mem: &SharedMemory, requested: u64) -> bool {
     let available = crate::performance::available_memory();
     if !crate::performance::growth_fits(old, requested, max, available) {
         crate::performance::MEMORY_PRESSURE.store(true, Ordering::Relaxed);
-        eprintln!("[host] heap growth refused: requested {} MB, maximum {} MB, available {} MB", requested >> 20, max >> 20, available.unwrap_or(0) >> 20);
+        eprintln!("[host] heap growth refused: requested {} MB, maximum {} MB, available {} MB | {}", requested >> 20, max >> 20, available.unwrap_or(0) >> 20, crate::debug::snapshot_text());
+        crate::debug::note_heap_refusal(requested >> 20, max >> 20, available.unwrap_or(0) >> 20);
         return false;
     }
     let page = 1u64 << mem.ty().page_size_log2();

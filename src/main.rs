@@ -6,6 +6,7 @@ mod aim;
 mod touch_gestures;
 mod audio;
 mod config;
+mod debug;
 mod diagnostics;
 mod fs;
 mod game_data;
@@ -106,6 +107,7 @@ fn raise_open_file_limit() {
 
 fn main() -> Result<()> {
     diagnostics::install();
+    debug::init();
     raise_open_file_limit();
     let argv: Vec<String> = std::env::args().collect();
 
@@ -304,6 +306,17 @@ fn load_module(engine: &Engine, startup: &config::Startup) -> Result<Module> {
     }
     eprintln!("[host] compiling {} to native code (one-time)…", wasm_path.display());
     let m = compile_patched(engine, &wasm_path)?;
+    // Drop stale precompiled game files: every patch used to write a new
+    // game-<len>-<stamp>-<key>.cwasm and never delete the old ones, so the
+    // cache grew by one multi-hundred-MB file per game update.
+    if let Ok(rd) = std::fs::read_dir(&startup.cache_dir) {
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.starts_with("game-") && name.ends_with(".cwasm") && e.path() != cache {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
     std::fs::write(&cache, m.serialize()?)?;
     Ok(m)
 }

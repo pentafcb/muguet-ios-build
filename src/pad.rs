@@ -30,7 +30,19 @@ const SWITCH_HOLD: Duration = Duration::from_millis(300);
 const STICK_DEADZONE: f32 = 0.3;
 const LOOK_DEADZONE: f32 = 0.12;
 
-const LOOK_SPEED: f64 = 700.0;
+// Base look rate in mouse px/s at full stick, before the pad sensitivity
+// setting and the shared mouse sensitivity. Raised from 700: at 700 the
+// sustained full-stick rate was only ~2200-3000 px/s (and slowest at 120 Hz,
+// see below), while one fast touch swipe delivers ~2000+ px in a single
+// event, so the pad could never turn as fast as a finger.
+const LOOK_SPEED: f64 = 1400.0;
+// Response curve exponent. Was 1.8, which crushed mid-stick: 50% deflection
+// gave only 22% of max speed. At 1.5, 50% gives 28% and 75% gives 61%.
+const LOOK_CURVE: f64 = 1.5;
+
+fn pad_sensitivity() -> f64 {
+    std::env::var("MUGUET_PAD_SENS").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0).clamp(0.1, 10.0)
+}
 
 fn gamepad() -> Option<objc2::rc::Retained<GCExtendedGamepad>> {
     unsafe { GCController::controllers().iter().find_map(|c| c.extendedGamepad()) }
@@ -49,7 +61,9 @@ pub fn poll() -> bool {
         return false;
     };
     if !ACTIVE.swap(true, Ordering::Relaxed) {
-        eprintln!("[pad] controller connected");
+        eprintln!("[pad] controller connected (look base {LOOK_SPEED} px/s, pad sens {}, mouse sens {})", pad_sensitivity(), crate::input::mouse_sensitivity());
+        crate::debug::log_line(&format!("pad connected: look base {LOOK_SPEED} px/s, pad sens {}, mouse sens {}, effective full-stick {} px/s",
+            pad_sensitivity(), crate::input::mouse_sensitivity(), LOOK_SPEED * pad_sensitivity() * crate::input::mouse_sensitivity()));
     }
     let mut guard = STATE.lock().unwrap();
     let st = guard.get_or_insert_with(|| State { held: HashSet::new(), buttons: 0, last: Instant::now(), down_since: None });
@@ -103,13 +117,24 @@ pub fn poll() -> bool {
         let rs = gp.rightThumbstick();
         let curve = |v: f32| -> f64 {
             let a = v.abs();
-            if a < LOOK_DEADZONE { 0.0 } else { (((a - LOOK_DEADZONE) / (1.0 - LOOK_DEADZONE)) as f64).powf(1.8).copysign(v as f64) }
+            if a < LOOK_DEADZONE { 0.0 } else { (((a - LOOK_DEADZONE) / (1.0 - LOOK_DEADZONE)) as f64).powf(LOOK_CURVE).copysign(v as f64) }
         };
-        let (dx, dy) = (curve(rs.xAxis().value()), -curve(rs.yAxis().value()));
-        if dx != 0.0 || dy != 0.0 {
+        let (raw_x, raw_y) = (rs.xAxis().value(), rs.yAxis().value());
+        let (cx, cy) = (curve(raw_x), -curve(raw_y));
+        if cx != 0.0 || cy != 0.0 {
             let aimed = buttons & 2 != 0 && !in_car;
             let aim_scale = std::env::var("MUGUET_AIM_SENS").ok().and_then(|v| v.parse().ok()).unwrap_or(0.4);
-            let (dx, dy) = crate::aim::scale_delta((dx * LOOK_SPEED * dt, dy * LOOK_SPEED * dt), 1.0, aimed, aim_scale);
+            // Flat rate on purpose. The old path ran through
+            // aim::scale_delta, whose per-event acceleration depended on the
+            // per-poll delta size, so full-stick speed changed with the poll
+            // rate: ~3500 px/s at 30 Hz, ~3000 at 60 Hz, ~2200 at 120 Hz.
+            // Rate is now LOOK_SPEED * pad_sens px/s before the shared
+            // mouse sensitivity, at any frame rate. The aim multiplier stays
+            // separate and is not touched by the pad sensitivity setting.
+            let speed = LOOK_SPEED * pad_sensitivity();
+            let aim = if aimed { aim_scale.clamp(0.05, 10.0) } else { 1.0 };
+            let (dx, dy) = (cx * speed * dt * aim, cy * speed * dt * aim * 0.85);
+            crate::debug::note_pad((raw_x, raw_y), (cx, cy), dt, (dx, dy), speed * crate::input::mouse_sensitivity(), aimed);
             input::mouse_delta_f(dx, dy);
         }
     }
