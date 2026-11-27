@@ -218,6 +218,14 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("SetBlipScale2", "hud_commands::SetBlipScale(int, float)"),
     ("SetBlipAsShortRange", "hud_commands::CommandSetBlipAsShortRange(int, bool)"),
     ("SetBlipAsShortRange2", "hud_commands::SetBlipAsShortRange(int, bool)"),
+    // Waypoint teleport (tpm). The wasm spells the blip reads
+    // without the Command prefix, and GetGroundZFor3dCoord takes
+    // a scrVector + float& + two bools. All four verified present
+    // in game.wasm (SHA-matched) before wiring them in.
+    ("GetFirstBlipInfoId", "hud_commands::GetFirstBlipInfoId(int)"),
+    ("GetBlipInfoIdCoord", "hud_commands::GetBlipInfoIdCoord(int)"),
+    ("IsWaypointActive", "hud_commands::CommandIsWaypointActive()"),
+    ("GetGroundZFor3dCoord", "misc_commands::CommandGetGroundZFor3dCoord(rage::scrVector const&, float&, bool, bool)"),
     ("SetFollowPedCamViewMode", "camera_commands::CommandSetFollowPedCamViewMode(int)"),
     ("SetFollowPedCamViewMode2", "camera_commands::SetFollowPedCamViewMode(int)"),
     ("GetFollowPedCamViewMode", "camera_commands::CommandGetFollowPedCamViewMode()"),
@@ -2423,7 +2431,9 @@ enum ConsoleAction {
     Heal,
     Kill,
     FixCar,
+    DeleteVehicle,
     Teleport(f32, f32, f32),
+    TeleportToWaypoint,
     Coords,
     Weather(String),
 }
@@ -2465,10 +2475,63 @@ fn poll_console_actions(c: &mut Cmd) {
                     crate::debug::console_line("vehicle repaired");
                 }
             }
+            ConsoleAction::DeleteVehicle => {
+                if c.i("IsPedInAnyVehicle", &[i(ped), b(false)]) == 0 {
+                    crate::debug::console_line("dv: you are not in a vehicle");
+                } else {
+                    let veh = c.i("GetVehiclePedIsIn", &[i(ped), b(false)]);
+                    // DeleteVehicle only deletes mission entities,
+                    // so mark it first; ref_arg passes the handle
+                    // by reference (int&). i_opt so a missing patch
+                    // reports itself instead of silently doing nothing.
+                    c.i("SetEntityAsMissionEntity", &[i(veh), b(true), b(true)]);
+                    match c.i_opt("DeleteVehicle", &[c.ref_arg(veh)]) {
+                        None => crate::debug::console_line("dv: DeleteVehicle native not available in this build"),
+                        Some(_) => crate::debug::console_line("vehicle deleted"),
+                    }
+                }
+            }
             ConsoleAction::Teleport(x, y, z) => {
                 let pos = c.vec_arg(1, [x, y, z]);
                 c.i("SetEntityCoordsNoOffset", &[i(ped), pos, b(false), b(false), b(false)]);
                 crate::debug::console_line(&format!("teleported to {x:.1}, {y:.1}, {z:.1}"));
+            }
+            ConsoleAction::TeleportToWaypoint => {
+                // A missing patch must report itself instead of a
+                // false "no waypoint".
+                match c.i_opt("IsWaypointActive", &[]) {
+                    None => crate::debug::console_line("tpm: waypoint natives not available in this build"),
+                    Some(0) => crate::debug::console_line("tpm: no waypoint set — place a marker on the map first"),
+                    Some(_) => {
+                        let blip = c.i_opt("GetFirstBlipInfoId", &[i(8)]).unwrap_or(0);
+                        if blip == 0 {
+                            crate::debug::console_line("tpm: no waypoint set — place a marker on the map first");
+                        } else {
+                            let pos = c.v("GetBlipInfoIdCoord", &[i(blip)]);
+                            // The waypoint blip's own z is usually 0,
+                            // so find the ground below it from high
+                            // up; fall back to the blip z when the
+                            // probe finds nothing.
+                            let probe = c.vec_arg(1, [pos[0], pos[1], 1000.0]);
+                            let z = match c.i_opt("GetGroundZFor3dCoord", &[probe, c.ptr(S_V3), b(false), b(false)]) {
+                                Some(found) if found != 0 => {
+                                    let gz = c.read_f32(S_V3);
+                                    if gz.is_finite() && gz > -100.0 && gz < 1000.0 { gz } else { pos[2] }
+                                }
+                                _ => pos[2],
+                            };
+                            // Driving? Take the car along, like FiveM's tpm.
+                            let target = if c.i("IsPedInAnyVehicle", &[i(ped), b(false)]) != 0 {
+                                c.i("GetVehiclePedIsIn", &[i(ped), b(false)])
+                            } else {
+                                ped
+                            };
+                            let dest = c.vec_arg(1, [pos[0], pos[1], z + 1.0]);
+                            c.i("SetEntityCoordsNoOffset", &[i(target), dest, b(false), b(false), b(false)]);
+                            crate::debug::console_line(&format!("teleported to waypoint {:.1}, {:.1}, {:.1}", pos[0], pos[1], z + 1.0));
+                        }
+                    }
+                }
             }
             ConsoleAction::Coords => {
                 let pos = c.v("GetEntityCoords", &[i(ped), b(false)]);
@@ -2482,6 +2545,14 @@ fn poll_console_actions(c: &mut Cmd) {
             }
         }
     }
+}
+
+// Rust -> Swift: quit the game back to the launcher (same path
+// as the in-game menu's Quit button). Declared like
+// muguet_open_menu in touch.rs; implemented as @_cdecl in
+// Launcher.swift.
+extern "C" {
+    fn muguet_quit_to_launcher();
 }
 
 // In-game console commands, called from Swift (ConsoleView). The
@@ -2508,6 +2579,12 @@ pub extern "C" fn muguet_console_command(code: *const std::ffi::c_char) {
         "heal" => queue_console_action(ConsoleAction::Heal),
         "kill" => queue_console_action(ConsoleAction::Kill),
         "fix" => queue_console_action(ConsoleAction::FixCar),
+        "dv" => queue_console_action(ConsoleAction::DeleteVehicle),
+        "tpm" => queue_console_action(ConsoleAction::TeleportToWaypoint),
+        "quit" => {
+            crate::debug::console_line("quitting to the launcher…");
+            unsafe { muguet_quit_to_launcher(); }
+        }
         "tp" => {
             let x: Option<f32> = parts.next().and_then(|s| s.parse().ok());
             let y: Option<f32> = parts.next().and_then(|s| s.parse().ok());
@@ -2581,6 +2658,8 @@ pub extern "C" fn muguet_console_command(code: *const std::ffi::c_char) {
             crate::debug::console_line("  heal — restore health + armor");
             crate::debug::console_line("  kill — kill the player");
             crate::debug::console_line("  fix — repair the vehicle you are driving");
+            crate::debug::console_line("  dv — delete the vehicle you are sitting in");
+            crate::debug::console_line("  tpm — teleport to the map waypoint (takes the car if you are driving)");
             crate::debug::console_line("  tp <x> <y> <z> — teleport to coordinates");
             crate::debug::console_line("  coords — print your position + heading");
             crate::debug::console_line("  weather <name> — EXTRASUNNY CLEAR CLOUDS SMOG FOGGY OVERCAST RAIN THUNDER CLEARING NEUTRAL SNOW BLIZZARD SNOWLIGHT XMAS");
@@ -2591,6 +2670,7 @@ pub extern "C" fn muguet_console_command(code: *const std::ffi::c_char) {
             crate::debug::console_line("  reload — re-apply settings from the launcher");
             crate::debug::console_line("  lowram — apply Save RAM preset");
             crate::debug::console_line("  ultralow — apply Ultra Low preset");
+            crate::debug::console_line("  quit — quit the game back to the launcher");
             crate::debug::console_line("  clear — clear the console");
             crate::debug::console_line("  close — close the console");
         }

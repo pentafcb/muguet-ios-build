@@ -2684,7 +2684,7 @@ public func muguetOpenMenu() {
 // (on by default); off stops new lines from yanking the view to the
 // bottom so history can be read. Commands: car/spawn, heal, kill,
 // fix, tp, coords, weather, cheat, fp, ram, dlc, reload, lowram,
-// ultralow, help, clear, close — see help in the console.
+// ultralow, dv, tpm, quit, help, clear, close — see help in the console.
 struct ConsoleView: View {
     @State private var logText = ""
     @State private var input = ""
@@ -2787,6 +2787,15 @@ public func muguetShowConsole() {
         hc.modalPresentationStyle = .overFullScreen
         hc.view.backgroundColor = .clear
         presenter.present(hc, animated: true)
+    }
+}
+
+@_cdecl("muguet_quit_to_launcher")
+public func muguetQuitToLauncher() {
+    // Console "quit": same as the in-game menu's Quit button.
+    // Apple treats exit(0) as a crash, so suspend instead.
+    DispatchQueue.main.async {
+        suspendApp()
     }
 }
 
