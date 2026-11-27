@@ -1,0 +1,79 @@
+name: Build IPA from game.wasm
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: "Also publish the IPA as a public GitHub Release (contains game code — leave off unless you mean it)"
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 360
+    permissions:
+      contents: write
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Select latest Xcode
+      run: |
+        XCODE=$(ls -d /Applications/Xcode*.app | sort -V | tail -1)
+        echo "Using $XCODE"
+        sudo xcode-select -s "$XCODE/Contents/Developer"
+
+    - name: Install deps
+      run: brew install xcodegen binaryen
+
+    - name: Install Rust 1.98.1 + iOS target
+      run: |
+        rustup toolchain install 1.98.1 --profile minimal
+        rustup default 1.98.1
+        rustup target add aarch64-apple-ios --toolchain 1.98.1
+
+    - name: Restore Rust build cache
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target/release
+          target/ios
+        key: muguet-archive-ios-rust1981-${{ hashFiles('Cargo.lock', 'src/**', 'build.rs', 'ios/Launcher.swift', 'vendor/**') }}
+        restore-keys: |
+          muguet-archive-ios-rust1981-
+
+    - name: Download game.wasm
+      run: |
+        set -euo pipefail
+        GAME_WASM_URL="https://www.bulkshare.cloud/api/anonymous-download?id=hQYfgdgl9l"
+        echo "downloading game.wasm (63 MB)..."
+        curl -L --fail --retry 5 --retry-all-errors -o game.wasm "$GAME_WASM_URL"
+        ls -lh game.wasm
+        echo "11ca8d2c04c5e843d18ff4aea4899d72c86973c6b031df334e67c446b2ae83e0  game.wasm" | shasum -a 256 -c -
+
+    - name: Build IPA
+      env:
+        BUNDLE_ID: com.pentaaaa.muguet
+      run: |
+        chmod +x make-ios.sh make-app.sh
+        ./make-ios.sh game.wasm --ipa
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: Muguet-ipa
+        path: build/Muguet.ipa
+        if-no-files-found: error
+        retention-days: 7
+
+    - name: Publish to Releases
+      if: inputs.publish_release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: build-${{ github.run_number }}
+        name: Muguet build ${{ github.run_number }}
+        files: build/Muguet.ipa
+        generate_release_notes: false
