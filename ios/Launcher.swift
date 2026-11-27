@@ -1378,18 +1378,27 @@ private struct ModEntry: Identifiable {
 // Name prompt for a bare dlc.rpf install. The picker copy is named
 // dlc.rpf, so the folder name cannot be derived from the file — the
 // user types it (e.g. loweyezv). Zip installs skip this: Rust takes
-// the name from the zip structure.
+// the name from the zip structure. The model name is a second field:
+// the spawn code inside the .rpf cannot be read out of the file and
+// may differ from the folder name, so the user types it too.
 struct ModNameSheet: View {
     @Binding var name: String
+    @Binding var modelName: String
     var onCancel: () -> Void
     var onInstall: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Mod name").font(.system(size: 19, weight: .semibold)).foregroundColor(.white)
-            Text("This is the folder name under dlcPacks and the vehicle code you spawn. Use lowercase letters, digits and underscores — e.g. loweyezv.")
+            Text("Folder is the folder name under dlcPacks and the line in dlcList.xml. Model is the spawn code (what CAR and auto-spawn use) — the .rpf file cannot be read, so type it if it differs from the folder, or leave it blank to use the folder name. Use lowercase letters, digits and underscores — e.g. loweyezv.")
                 .font(.system(size: 12)).foregroundColor(.white.opacity(0.55))
-            TextField("Mod name (e.g. loweyezv)", text: $name)
+            TextField("Mod folder (e.g. loweyezv)", text: $name)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .foregroundColor(.white)
+                .padding(.horizontal, 12).padding(.vertical, 10)
+                .background(RoundedRectangle(cornerRadius: 9).fill(Color.white.opacity(0.08)))
+            TextField("Model name — spawn code (optional)", text: $modelName)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .foregroundColor(.white)
@@ -1435,6 +1444,7 @@ struct CLSettingsPanel: View {
     @State private var modNameSheetURL: URL?
     @State private var showingModNameSheet = false
     @State private var modNameText = ""
+    @State private var modModelText = ""
     @State private var modToDelete: String?
     @State private var modsStatus = ""
     @State private var modsWorking = false
@@ -1800,7 +1810,16 @@ struct CLSettingsPanel: View {
             .transition(.move(edge: .trailing))
         }
         .environment(\.colorScheme, .dark)
-        .sheet(isPresented: $pickingMod) {
+        // The name sheet must wait for the picker to finish dismissing:
+        // presenting it in the same turn blacked the screen, because
+        // UIKit will not present on a controller that is dismissing.
+        // installModFile only stashes the picked URL; onDismiss fires
+        // once the picker is gone and the hierarchy is clean again.
+        .sheet(isPresented: $pickingMod, onDismiss: {
+            if modNameSheetURL != nil {
+                showingModNameSheet = true
+            }
+        }) {
             DocumentPicker(isPresented: $pickingMod, contentTypes: [UTType.zip, UTType(tag: "rpf", tagClass: .filenameExtension, conformingTo: .data) ?? UTType.data], onPick: { url in
                 installModFile(url)
             }, onError: { message in
@@ -1810,14 +1829,15 @@ struct CLSettingsPanel: View {
         }
         .sheet(isPresented: $showingModNameSheet) {
             if let url = modNameSheetURL {
-                ModNameSheet(name: $modNameText, onCancel: {
+                ModNameSheet(name: $modNameText, modelName: $modModelText, onCancel: {
                     showingModNameSheet = false
                     modNameSheetURL = nil
                 }, onInstall: {
-                    let name = modNameText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                    let folder = modNameText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                    let model = modModelText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
                     showingModNameSheet = false
                     modNameSheetURL = nil
-                    runModInstall(url: url, name: name)
+                    runModInstall(url: url, name: folder, modelName: model)
                 })
             }
         }
@@ -1868,16 +1888,26 @@ struct CLSettingsPanel: View {
         if url.pathExtension.lowercased() == "rpf" {
             // A bare dlc.rpf carries no folder name, so ask for it.
             // A zip skips this: Rust takes the name from the zip.
+            // Only stash the URL here — the name sheet is presented
+            // from the picker sheet's onDismiss, once the picker
+            // has fully gone away (see the sheet above).
             let stem = url.deletingPathExtension().lastPathComponent
-            modNameText = stem.lowercased() == "dlc" ? "" : stem.lowercased()
+            let prefill = stem.lowercased() == "dlc" ? "" : stem.lowercased()
+            modNameText = prefill
+            modModelText = prefill
             modNameSheetURL = url
-            showingModNameSheet = true
             return
         }
         runModInstall(url: url, name: "")
     }
 
-    private func runModInstall(url: URL, name: String) {
+    // modelName is the spawn code for a bare .rpf install (typed in
+    // the name sheet; blank falls back to the folder name). For a zip
+    // it is empty and the folder name Rust returns is the code, as
+    // before. The folder name always goes to Rust for the dlcPacks
+    // path and the dlcList.xml line; only the sandboxVehicles entry
+    // takes the model name.
+    private func runModInstall(url: URL, name: String, modelName: String = "") {
         modsWorking = true
         modsStatus = "Installing…"
         DispatchQueue.global(qos: .userInitiated).async {
@@ -1889,9 +1919,14 @@ struct CLSettingsPanel: View {
             DispatchQueue.main.async {
                 modsWorking = false
                 if ok, !installed.isEmpty {
-                    modsStatus = "Installed \(installed). Restart the game to use it."
-                    if !s.sandboxVehicles.contains(installed) {
-                        s.sandboxVehicles.append(installed)
+                    let vehicleCode = modelName.isEmpty ? installed : modelName
+                    if vehicleCode == installed {
+                        modsStatus = "Installed \(installed). Restart the game to use it."
+                    } else {
+                        modsStatus = "Installed \(installed) — spawn it with \(vehicleCode). Restart the game to use it."
+                    }
+                    if !s.sandboxVehicles.contains(vehicleCode) {
+                        s.sandboxVehicles.append(vehicleCode)
                         try? s.save()
                     }
                     refreshMods()
