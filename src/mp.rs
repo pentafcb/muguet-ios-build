@@ -951,6 +951,8 @@ struct Game {
     met: bool,
     unfreeze_at: Option<Instant>,
     spawn_shield: Option<Instant>,
+    starter_done: bool,
+    starter_since: Option<Instant>,
 }
 
 struct ShopBlip {
@@ -1119,6 +1121,8 @@ pub fn script_tick(caller: &mut Caller<'_, HostState>, thread: u64, tls: u64) ->
         met: false,
         unfreeze_at: None,
         spawn_shield: Some(Instant::now() + Duration::from_secs(8)),
+        starter_done: false,
+        starter_since: None,
     });
 
     let is_host = thread == game.host && name == game.host_name;
@@ -1156,6 +1160,12 @@ pub fn script_tick(caller: &mut Caller<'_, HostState>, thread: u64, tls: u64) ->
         if host_changed {
             for (_, a) in game.avatars.drain() { despawn(&mut c, a); }
             for (_, m) in game.mirrors.drain() { remove_mirror(&mut c, m); }
+            // A new host thread means a new session starting (including
+            // replaying in the same process): the starter truck gets
+            // another chance. The in-vehicle check in the starter
+            // itself stops a duplicate after a mid-session handover.
+            game.starter_done = false;
+            game.starter_since = None;
             // Taken keys are (owner, key): the old owner is gone, and
             // a stale key permanently blocks mirroring a later car
             // that reuses the same entity handle.
@@ -1163,6 +1173,7 @@ pub fn script_tick(caller: &mut Caller<'_, HostState>, thread: u64, tls: u64) ->
         }
         init_world_blips_once(&mut c);
         update_camera_mode(&mut c);
+        sandbox_starter_vehicle(&mut c, game);
 
         if WANT_BULLETS.swap(false, Ordering::Relaxed) {
             more_bullets(&mut c);
@@ -2325,6 +2336,49 @@ fn delete_ped(c: &mut Cmd, ped: i32) {
         let r = c.ref_arg(ped);
         c.i("DeletePed", &[r]);
     }
+}
+
+// Sandbox starter vehicle: every sandbox session starts the player
+// inside the configured add-on vehicle (default loweyezv, the
+// Silverado). The model streams from the mounted DLC, so if the mod
+// is not installed the model never loads and this gives up silently
+// after 30 s instead of stalling the game. State lives on Game and
+// resets on host change, so replaying in the same process spawns it
+// again; the in-vehicle check stops a duplicate after a handover.
+// Change the vehicle (or disable it with an empty value) through the
+// sandbox_vehicle key in config.json.
+fn sandbox_starter_vehicle(c: &mut Cmd, game: &mut Game) {
+    if game.starter_done { return; }
+    if net().is_some() { return; }
+    if std::env::var("MUGUET_MODE").as_deref() != Ok("sandbox") { return; }
+    let model_name = std::env::var("MUGUET_SANDBOX_VEHICLE").unwrap_or_else(|_| "loweyezv".to_string());
+    if model_name.is_empty() {
+        game.starter_done = true;
+        return;
+    }
+    let since = *game.starter_since.get_or_insert_with(Instant::now);
+    if since.elapsed() > Duration::from_secs(30) {
+        game.starter_done = true;
+        eprintln!("[mp] sandbox starter vehicle: model {model_name} never loaded (mod not installed?); giving up");
+        return;
+    }
+    let ped = c.i("PlayerPedId", &[]);
+    if ped == 0 || !c.exists(ped) { return; }
+    if c.i("IsPedInAnyVehicle", &[i(ped), b(false)]) != 0 {
+        game.starter_done = true;
+        return;
+    }
+    let model = proto::joaat(&model_name);
+    if !model_ready(c, model) { return; }
+    let pos = c.v("GetEntityCoords", &[i(ped), b(false)]);
+    let heading = c.f("GetEntityHeading", &[i(ped)]);
+    let p = c.vec_arg(1, pos);
+    let veh = c.i("CreateVehicle", &[i(model as i32), p, f(heading), b(false), b(false), b(false)]);
+    if veh == 0 { return; }
+    c.i("SetVehicleEngineOn", &[i(veh), b(true), b(true), b(false)]);
+    c.i("SetPedIntoVehicle", &[i(ped), i(veh), i(-1)]);
+    game.starter_done = true;
+    eprintln!("[mp] sandbox starter vehicle spawned: {model_name}");
 }
 
 fn model_ready(c: &mut Cmd, model: u32) -> bool {

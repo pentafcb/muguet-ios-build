@@ -271,6 +271,12 @@ fn settings(cfg_path: &Path) -> Vec<String> {
     let promotion_sync = cfg.get("promotion_sync").and_then(|v| v.as_bool()).unwrap_or(false);
     crate::performance::set_promotion_sync(promotion_sync);
     set_default("MUGUET_PROMOTION_SYNC", if promotion_sync { "1" } else { "0" });
+    // Starter vehicle for sandbox sessions (default loweyezv when the
+    // key is absent; empty disables it). The host reads
+    // MUGUET_SANDBOX_VEHICLE.
+    if let Some(v) = cfg.get("sandbox_vehicle").and_then(|v| v.as_str()) {
+        set_default("MUGUET_SANDBOX_VEHICLE", v);
+    }
 
     let text = |k: &str| cfg.get(k).and_then(|v| v.as_str()).map(str::trim).filter(|v| !v.is_empty());
     if flag("multiplayer") {
