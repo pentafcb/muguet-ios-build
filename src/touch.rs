@@ -25,6 +25,7 @@ enum Act {
     Horn,
     Home,
     FirstPerson,
+    SpawnCar,
 }
 
 #[derive(Clone, Copy)]
@@ -69,6 +70,7 @@ const BUTTONS: &[Spec] = &[
     b(TopLeft(138.0, 30.0), 22.0, Some(("MENU\nKEYS", NavToggle)), Some(("MENU\nKEYS", NavToggle))),
     b(TopLeft(192.0, 30.0), 22.0, Some(("SWITCH", Key("AltLeft"))), Some(("SWITCH", Key("AltLeft")))),
     b(TopLeft(246.0, 30.0), 22.0, Some(("1ST\nPOV", FirstPerson)), Some(("1ST\nPOV", FirstPerson))),
+    b(TopLeft(300.0, 30.0), 22.0, Some(("CAR", SpawnCar)), Some(("CAR", SpawnCar))),
     b(TopLeft(45.0, 112.0), 29.0, Some(("FIRE", Mouse(1))), None),
     n(-182.0, "TAB ◀", "KeyQ"),
     n(-130.0, "◀", "ArrowLeft"),
@@ -616,6 +618,9 @@ impl Overlay {
                         Some(FirstPerson) => {
                             crate::mp::request_toggle_first_person();
                             input::key("KeyV", true, false, None, false);
+                        }
+                        Some(SpawnCar) => {
+                            crate::mp::request_spawn_first_vehicle();
                         }
                         _ => {}
                     }

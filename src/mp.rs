@@ -953,6 +953,7 @@ struct Game {
     spawn_shield: Option<Instant>,
     starter_done: bool,
     starter_since: Option<Instant>,
+    pending_spawn: Option<(String, Instant)>,
 }
 
 struct ShopBlip {
@@ -1123,6 +1124,7 @@ pub fn script_tick(caller: &mut Caller<'_, HostState>, thread: u64, tls: u64) ->
         spawn_shield: Some(Instant::now() + Duration::from_secs(8)),
         starter_done: false,
         starter_since: None,
+        pending_spawn: None,
     });
 
     let is_host = thread == game.host && name == game.host_name;
@@ -1166,6 +1168,7 @@ pub fn script_tick(caller: &mut Caller<'_, HostState>, thread: u64, tls: u64) ->
             // itself stops a duplicate after a mid-session handover.
             game.starter_done = false;
             game.starter_since = None;
+            game.pending_spawn = None;
             // Taken keys are (owner, key): the old owner is gone, and
             // a stale key permanently blocks mirroring a later car
             // that reuses the same entity handle.
@@ -1174,6 +1177,7 @@ pub fn script_tick(caller: &mut Caller<'_, HostState>, thread: u64, tls: u64) ->
         init_world_blips_once(&mut c);
         update_camera_mode(&mut c);
         sandbox_starter_vehicle(&mut c, game);
+        poll_spawn_request(&mut c, game);
 
         if WANT_BULLETS.swap(false, Ordering::Relaxed) {
             more_bullets(&mut c);
@@ -2338,6 +2342,86 @@ fn delete_ped(c: &mut Cmd, ped: i32) {
     }
 }
 
+static SPAWN_REQUEST: Mutex<Option<String>> = Mutex::new(None);
+
+// On-demand vehicle spawn: the in-game menu and the on-screen CAR
+// button ask for a model by code, and the next script tick runs the
+// same spawn step the starter uses. The request waits up to 30 s for
+// the model to stream in, then gives up silently.
+pub fn request_spawn_vehicle(model: String) {
+    if let Ok(mut slot) = SPAWN_REQUEST.lock() {
+        *slot = Some(model);
+    }
+}
+
+// The on-screen CAR button spawns the first saved vehicle (the
+// starter) without opening the menu. The toggle only disables the
+// automatic spawn at session start, so this still works with
+// auto-spawn off; an empty list means nothing to spawn.
+pub fn request_spawn_first_vehicle() {
+    let first = std::env::var("MUGUET_SANDBOX_VEHICLES").ok()
+        .and_then(|v| v.split(',').map(|s| s.trim().to_string()).find(|s| !s.is_empty()));
+    let model = match first {
+        Some(m) => m,
+        None => match std::env::var("MUGUET_SANDBOX_VEHICLE").ok() {
+            Some(m) if !m.is_empty() => m,
+            Some(_) => return,
+            None => "loweyezv".to_string(),
+        },
+    };
+    request_spawn_vehicle(model);
+}
+
+#[no_mangle]
+pub extern "C" fn muguet_spawn_vehicle(code: *const std::ffi::c_char) {
+    if code.is_null() { return; }
+    let name = unsafe { std::ffi::CStr::from_ptr(code) }.to_string_lossy().trim().to_lowercase();
+    if !name.is_empty() {
+        request_spawn_vehicle(name);
+    }
+}
+
+fn poll_spawn_request(c: &mut Cmd, game: &mut Game) {
+    if game.pending_spawn.is_none() {
+        if let Ok(mut slot) = SPAWN_REQUEST.lock() {
+            if let Some(model) = slot.take() {
+                game.pending_spawn = Some((model, Instant::now()));
+            }
+        }
+    }
+    let Some((model_name, since)) = game.pending_spawn.clone() else { return; };
+    if since.elapsed() > Duration::from_secs(30) {
+        eprintln!("[mp] spawn request: model {model_name} never loaded; giving up");
+        game.pending_spawn = None;
+        return;
+    }
+    if try_spawn_vehicle(c, proto::joaat(&model_name)) {
+        eprintln!("[mp] spawn request: spawned {model_name}");
+        game.pending_spawn = None;
+    }
+}
+
+// One spawn attempt at the player's position: true once the vehicle
+// is in the world. False while the model is still streaming in or
+// the player does not exist yet, so the caller retries next tick. If
+// the player is already driving, the new vehicle spawns beside him
+// instead of warping him out of his current one.
+fn try_spawn_vehicle(c: &mut Cmd, model: u32) -> bool {
+    let ped = c.i("PlayerPedId", &[]);
+    if ped == 0 || !c.exists(ped) { return false; }
+    if !model_ready(c, model) { return false; }
+    let pos = c.v("GetEntityCoords", &[i(ped), b(false)]);
+    let heading = c.f("GetEntityHeading", &[i(ped)]);
+    let p = c.vec_arg(1, pos);
+    let veh = c.i("CreateVehicle", &[i(model as i32), p, f(heading), b(false), b(false), b(false)]);
+    if veh == 0 { return false; }
+    c.i("SetVehicleEngineOn", &[i(veh), b(true), b(true), b(false)]);
+    if c.i("IsPedInAnyVehicle", &[i(ped), b(false)]) == 0 {
+        c.i("SetPedIntoVehicle", &[i(ped), i(veh), i(-1)]);
+    }
+    true
+}
+
 // Sandbox starter vehicle: every sandbox session starts the player
 // inside the configured add-on vehicle (default loweyezv, the
 // Silverado). The model streams from the mounted DLC, so if the mod
@@ -2345,8 +2429,8 @@ fn delete_ped(c: &mut Cmd, ped: i32) {
 // after 30 s instead of stalling the game. State lives on Game and
 // resets on host change, so replaying in the same process spawns it
 // again; the in-vehicle check stops a duplicate after a handover.
-// Change the vehicle (or disable it with an empty value) through the
-// sandbox_vehicle key in config.json.
+// Change the vehicle, add more, or turn it off through the Sandbox
+// Vehicles settings in the launcher.
 fn sandbox_starter_vehicle(c: &mut Cmd, game: &mut Game) {
     if game.starter_done { return; }
     if net().is_some() { return; }
@@ -2368,17 +2452,10 @@ fn sandbox_starter_vehicle(c: &mut Cmd, game: &mut Game) {
         game.starter_done = true;
         return;
     }
-    let model = proto::joaat(&model_name);
-    if !model_ready(c, model) { return; }
-    let pos = c.v("GetEntityCoords", &[i(ped), b(false)]);
-    let heading = c.f("GetEntityHeading", &[i(ped)]);
-    let p = c.vec_arg(1, pos);
-    let veh = c.i("CreateVehicle", &[i(model as i32), p, f(heading), b(false), b(false), b(false)]);
-    if veh == 0 { return; }
-    c.i("SetVehicleEngineOn", &[i(veh), b(true), b(true), b(false)]);
-    c.i("SetPedIntoVehicle", &[i(ped), i(veh), i(-1)]);
-    game.starter_done = true;
-    eprintln!("[mp] sandbox starter vehicle spawned: {model_name}");
+    if try_spawn_vehicle(c, proto::joaat(&model_name)) {
+        game.starter_done = true;
+        eprintln!("[mp] sandbox starter vehicle spawned: {model_name}");
+    }
 }
 
 fn model_ready(c: &mut Cmd, model: u32) -> bool {

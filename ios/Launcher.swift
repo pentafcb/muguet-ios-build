@@ -36,6 +36,8 @@ final class Settings: ObservableObject {
     static var cachedPromotionSync = false
     @Published var deepOptimization = false
     @Published var ultraLow = false
+    @Published var sandboxAutoSpawn = true
+    @Published var sandboxVehicles: [String] = ["loweyezv"]
     @Published var maxPlayers = 32
 
     // Granular GTA V Graphics Options
@@ -169,6 +171,14 @@ final class Settings: ObservableObject {
         if let v = json["promotion_sync"] as? Bool { promotionSync = v }
         if let v = json["deep_optimization"] as? Bool { deepOptimization = v }
         if let v = json["ultra_low"] as? Bool { ultraLow = v }
+        if let v = json["sandbox_auto_spawn"] as? Bool { sandboxAutoSpawn = v }
+        if let arr = json["sandbox_vehicles"] as? [String] {
+            let cleaned = arr.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }.filter { !$0.isEmpty }
+            if !cleaned.isEmpty { sandboxVehicles = cleaned }
+        } else if let v = json["sandbox_vehicle"] as? String {
+            let c = v.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if !c.isEmpty { sandboxVehicles = [c] }
+        }
         if let v = json["shadow_quality"] as? Int, (0...3).contains(v) { shadowQuality = v }
         if let v = json["shadow_distance"] as? Double { shadowDistance = max(0.5, min(2.0, v)) }
         if let v = json["reflection_quality"] as? Int, (0...3).contains(v) { reflectionQuality = v }
@@ -225,6 +235,8 @@ final class Settings: ObservableObject {
         json["promotion_sync"] = promotionSync
         json["deep_optimization"] = deepOptimization
         json["ultra_low"] = ultraLow
+        json["sandbox_auto_spawn"] = sandboxAutoSpawn
+        json["sandbox_vehicles"] = sandboxVehicles
         json["max_players"] = maxPlayers
         json["room_digits"] = roomDigits
         json["join_code"] = joinCode
@@ -345,6 +357,9 @@ func muguet_reload_settings()
 func muguet_debug_log(_ msg: UnsafePointer<CChar>)
 @_silgen_name("muguet_apply_cheat")
 func muguet_apply_cheat(_ code: UnsafePointer<CChar>)
+
+@_silgen_name("muguet_spawn_vehicle")
+func muguet_spawn_vehicle(_ code: UnsafePointer<CChar>)
 @_silgen_name("muguet_is_multiplayer")
 func muguet_is_multiplayer() -> Bool
 @_silgen_name("muguet_toggle_first_person")
@@ -518,6 +533,66 @@ struct CheatMenuView: View {
     private func apply(_ code: String) {
         onApply(code)
         withAnimation { toastMessage = "Cheat code sent: \(code)" }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            dismiss()
+        }
+    }
+}
+
+struct VehicleMenuView: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var toastMessage: String?
+    let codes: [String]
+    let onSpawn: (String) -> Void
+
+    var body: some View {
+        NavigationView {
+            List {
+                Section(header: Text("Saved vehicles")) {
+                    if codes.isEmpty {
+                        Text("No vehicles saved. Add codes in Settings > Sandbox Vehicles.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    ForEach(codes, id: \.self) { code in
+                        HStack {
+                            Text(code).font(.body.monospaced())
+                            Spacer()
+                            Button(action: { spawn(code) }) {
+                                Text("Spawn").font(.caption.weight(.bold)).padding(.horizontal, 10).padding(.vertical, 4)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .tint(.orange)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Spawn a Vehicle")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Close") { dismiss() }
+                }
+            }
+            .overlay(alignment: .bottom) {
+                if let msg = toastMessage {
+                    Text(msg)
+                        .font(.callout.bold())
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .background(.ultraThinMaterial)
+                        .clipShape(Capsule())
+                        .shadow(radius: 5)
+                        .padding(.bottom, 20)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+            }
+        }
+        .navigationViewStyle(StackNavigationViewStyle())
+    }
+
+    private func spawn(_ code: String) {
+        onSpawn(code)
+        withAnimation { toastMessage = "Spawning \(code)…" }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
             dismiss()
         }
@@ -1066,6 +1141,7 @@ struct LauncherView: View {
     @State private var showingHUDEditor = false
     @State private var showingResetAlert = false
     @State private var resetAlertMessage = ""
+    @State private var newVehicleCode = ""
     var isOverlay: Bool = false
     let play: () -> Void
 
@@ -1566,6 +1642,42 @@ struct LauncherView: View {
                     }
                 }
 
+                if !s.multiplayer {
+                    Section("Sandbox Vehicles") {
+                        Toggle("Auto-spawn vehicle in Sandbox", isOn: $s.sandboxAutoSpawn)
+                            .onChange(of: s.sandboxAutoSpawn) { _ in try? s.save() }
+                        Text("When on, every Sandbox session starts you inside the first vehicle below. Turn it off if the spawn ever causes trouble — the CAR button and the in-game menu still work.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        ForEach(s.sandboxVehicles, id: \.self) { code in
+                            HStack {
+                                Text(code).font(.body.monospaced())
+                                Spacer()
+                                if code == s.sandboxVehicles.first {
+                                    Text("starter").font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                        .onDelete { idx in
+                            s.sandboxVehicles.remove(atOffsets: idx)
+                            try? s.save()
+                        }
+                        HStack {
+                            TextField("Add a vehicle code (e.g. loweyezv)", text: $newVehicleCode)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                            Button("Add") {
+                                let c = newVehicleCode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                                guard !c.isEmpty, !s.sandboxVehicles.contains(c) else { return }
+                                s.sandboxVehicles.append(c)
+                                newVehicleCode = ""
+                                try? s.save()
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(newVehicleCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        }
+                    }
+                }
+
                 Section("Save Data") {
                     Button("Share / Backup saves") { shareSaves() }
                     Text("In game: save via Phone > Quick Save, or Pause > Game > Save Game. Saves are stored in Files app > On My iPhone > GTA V > saves.")
@@ -1799,6 +1911,13 @@ public func muguetOpenMenu() {
                 }))
                 cheatHost.modalPresentationStyle = .formSheet
                 presenter.present(cheatHost, animated: true)
+            }))
+            alert.addAction(UIAlertAction(title: "Spawn a vehicle", style: .default, handler: { _ in
+                let host = UIHostingController(rootView: VehicleMenuView(codes: Settings().sandboxVehicles, onSpawn: { code in
+                    code.withCString { muguet_spawn_vehicle($0) }
+                }))
+                host.modalPresentationStyle = .formSheet
+                presenter.present(host, animated: true)
             }))
         }
 

@@ -271,12 +271,29 @@ fn settings(cfg_path: &Path) -> Vec<String> {
     let promotion_sync = cfg.get("promotion_sync").and_then(|v| v.as_bool()).unwrap_or(false);
     crate::performance::set_promotion_sync(promotion_sync);
     set_default("MUGUET_PROMOTION_SYNC", if promotion_sync { "1" } else { "0" });
-    // Starter vehicle for sandbox sessions (default loweyezv when the
-    // key is absent; empty disables it). The host reads
-    // MUGUET_SANDBOX_VEHICLE.
-    if let Some(v) = cfg.get("sandbox_vehicle").and_then(|v| v.as_str()) {
-        set_default("MUGUET_SANDBOX_VEHICLE", v);
-    }
+    // Sandbox vehicles: the launcher saves sandbox_vehicles (a list of
+    // model codes) and sandbox_auto_spawn. The starter spawns the first
+    // code when auto-spawn is on; an empty starter disables it. The
+    // full list goes to MUGUET_SANDBOX_VEHICLES for the on-screen CAR
+    // button and the in-game spawn menu. A config that never had the
+    // keys keeps the Silverado default.
+    let sandbox_auto_spawn = cfg.get("sandbox_auto_spawn").and_then(|v| v.as_bool()).unwrap_or(true);
+    let sandbox_vehicles: Vec<String> = match cfg.get("sandbox_vehicles").and_then(|v| v.as_array()) {
+        Some(arr) => arr.iter().filter_map(|v| v.as_str()).map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()).collect(),
+        None => cfg.get("sandbox_vehicle").and_then(|v| v.as_str()).map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()).map(|s| vec![s]).unwrap_or_default(),
+    };
+    let vehicles_configured = cfg.get("sandbox_vehicles").is_some() || cfg.get("sandbox_vehicle").is_some();
+    let starter = if !sandbox_auto_spawn {
+        String::new()
+    } else if let Some(first) = sandbox_vehicles.first() {
+        first.clone()
+    } else if vehicles_configured {
+        String::new()
+    } else {
+        "loweyezv".to_string()
+    };
+    set_default("MUGUET_SANDBOX_VEHICLE", starter);
+    set_default("MUGUET_SANDBOX_VEHICLES", sandbox_vehicles.join(","));
 
     let text = |k: &str| cfg.get(k).and_then(|v| v.as_str()).map(str::trim).filter(|v| !v.is_empty());
     if flag("multiplayer") {
