@@ -2680,30 +2680,42 @@ public func muguetOpenMenu() {
 
 // FiveM-style in-game console (F8): a dark panel over the top ~55%
 // of the screen with the latest log lines and an input row. It polls
-// muguet_console_tail() while open. Commands: spawn <code>, help,
-// clear, close.
+// muguet_console_tail() while open. Header has an Auto-scroll toggle
+// (on by default); off stops new lines from yanking the view to the
+// bottom so history can be read. Commands: car/spawn, heal, kill,
+// fix, tp, coords, weather, cheat, fp, ram, dlc, reload, lowram,
+// ultralow, help, clear, close — see help in the console.
 struct ConsoleView: View {
     @State private var logText = ""
     @State private var input = ""
+    @State private var autoScroll = true
     @State private var pollTick = Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()
     var onClose: () -> Void
 
     var body: some View {
         ZStack(alignment: .top) {
             Color.clear
-            VStack(spacing: 0) {
-                HStack {
-                    Text("Console").font(.headline)
-                    Spacer()
-                    Button("Open log") { shareDiagnostics() }
+            // ScrollViewReader wraps the whole panel so the header
+            // toggle can scroll back to the bottom when auto-scroll
+            // is turned on again.
+            ScrollViewReader { proxy in
+                VStack(spacing: 0) {
+                    HStack {
+                        Text("Console").font(.headline)
+                        Spacer()
+                        Button(autoScroll ? "Auto-scroll: On" : "Auto-scroll: Off") {
+                            autoScroll.toggle()
+                            if autoScroll { proxy.scrollTo("bottom", anchor: .bottom) }
+                        }
                         .font(.subheadline)
-                    Button("Close") { onClose() }
-                        .font(.subheadline.weight(.semibold))
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(Color.black.opacity(0.85))
-                ScrollViewReader { proxy in
+                        Button("Open log") { shareDiagnostics() }
+                            .font(.subheadline)
+                        Button("Close") { onClose() }
+                            .font(.subheadline.weight(.semibold))
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(Color.black.opacity(0.85))
                     ScrollView {
                         Text(logText.isEmpty ? "Console ready — type help for commands." : logText)
                             .font(.system(.caption, design: .monospaced))
@@ -2713,26 +2725,26 @@ struct ConsoleView: View {
                             .padding(.vertical, 8)
                             .id("bottom")
                             .onChange(of: logText) { _ in
-                                proxy.scrollTo("bottom", anchor: .bottom)
+                                if autoScroll { proxy.scrollTo("bottom", anchor: .bottom) }
                             }
                     }
                     .background(Color.black.opacity(0.85))
+                    HStack(spacing: 8) {
+                        Text(">").font(.system(.body, design: .monospaced)).foregroundColor(.white)
+                        TextField("Type a command (help for list)", text: $input)
+                            .font(.system(.body, design: .monospaced))
+                            .foregroundColor(.white)
+                            .autocorrectionDisabled()
+                            .textInputAutocapitalization(.never)
+                            .onSubmit { submit() }
+                        Button("Send") { submit() }
+                            .font(.subheadline.weight(.semibold))
+                    }
+                    .padding(10)
+                    .background(Color.black.opacity(0.9))
                 }
-                HStack(spacing: 8) {
-                    Text(">").font(.system(.body, design: .monospaced)).foregroundColor(.white)
-                    TextField("Type a command (help for list)", text: $input)
-                        .font(.system(.body, design: .monospaced))
-                        .foregroundColor(.white)
-                        .autocorrectionDisabled()
-                        .textInputAutocapitalization(.never)
-                        .onSubmit { submit() }
-                    Button("Send") { submit() }
-                        .font(.subheadline.weight(.semibold))
-                }
-                .padding(10)
-                .background(Color.black.opacity(0.9))
+                .frame(height: UIScreen.main.bounds.height * 0.55, alignment: .top)
             }
-            .frame(height: UIScreen.main.bounds.height * 0.55, alignment: .top)
         }
         .ignoresSafeArea()
         .onReceive(pollTick) { _ in poll() }
