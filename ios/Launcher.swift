@@ -1132,6 +1132,717 @@ struct DocumentPicker: UIViewControllerRepresentable {
     }
 }
 
+// CloudLauncher-style shared pieces (CL prefix). The Muguet target has no
+// Color(hex:) helper, so the standard 6-digit hex init lives here too.
+extension Color {
+    init(hex: String) {
+        let cleaned = hex.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "#", with: "")
+        let value = UInt64(cleaned, radix: 16) ?? 0
+        self.init(red: Double((value >> 16) & 0xFF) / 255.0,
+                  green: Double((value >> 8) & 0xFF) / 255.0,
+                  blue: Double(value & 0xFF) / 255.0)
+    }
+}
+
+// Small shared panel header (title + close X), mirroring CloudLauncher.
+struct CLPanelHeader: View {
+    let title: String
+    var onClose: () -> Void
+    var body: some View {
+        HStack {
+            Text(title)
+                .font(.system(size: 21, weight: .semibold))
+                .foregroundColor(.white)
+            Spacer()
+            Button(action: onClose) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundColor(.white.opacity(0.85))
+                    .frame(width: 32, height: 32)
+                    .background(Circle().fill(Color.white.opacity(0.1)))
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 22)
+        .padding(.top, 18)
+        .padding(.bottom, 10)
+    }
+}
+
+// Uppercase section label wrapper, mirroring CloudLauncher's panel sections.
+// Uses kerning instead of tracking so it still compiles on the iOS 15 target.
+struct CLSection<Content: View>: View {
+    let title: String
+    let content: Content
+    init(_ title: String, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.content = content()
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title.uppercased())
+                .font(.system(size: 11, weight: .bold)).kerning(1.2)
+                .foregroundColor(.white.opacity(0.55))
+            content
+        }
+    }
+}
+
+// Console-style toggle switch, mirroring CloudLauncher's SettingsToggle.
+struct CLToggle: View {
+    let title: String
+    @Binding var isOn: Bool
+    var body: some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.2)) { isOn.toggle() }
+        } label: {
+            HStack {
+                Text(title).foregroundColor(.white)
+                Spacer()
+                ZStack(alignment: isOn ? .trailing : .leading) {
+                    Capsule()
+                        .fill(isOn ? Color(hex: "7EE787") : Color.white.opacity(0.18))
+                        .frame(width: 50, height: 30)
+                    Circle()
+                        .fill(Color.white)
+                        .frame(width: 24, height: 24)
+                        .padding(.horizontal, 3)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+// Capsule option chips, mirroring CloudLauncher's chip rows. Selected chip
+// is white with dark text, unselected is white 0.1 fill.
+struct CLChipPicker<Value: Hashable>: View {
+    let label: String
+    @Binding var selection: Value
+    let options: [(String, Value)]
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(label).font(.system(size: 12.5)).foregroundColor(.white.opacity(0.6))
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(options.indices, id: \.self) { i in
+                        let option = options[i]
+                        Button { selection = option.1 } label: {
+                            Text(option.0)
+                                .font(.system(size: 14, weight: selection == option.1 ? .bold : .regular))
+                                .foregroundColor(selection == option.1 ? Color(hex: "0B0D12") : .white)
+                                .padding(.horizontal, 16).padding(.vertical, 8)
+                                .background(Capsule().fill(selection == option.1 ? Color.white : Color.white.opacity(0.1)))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Dark text field, mirroring CloudLauncher's DarkField.
+struct CLDarkField: View {
+    let label: String
+    @Binding var text: String
+    var placeholder: String = ""
+    var autocapitalization: TextInputAutocapitalization = .never
+    var keyboardType: UIKeyboardType = .default
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(label).font(.system(size: 12.5)).foregroundColor(.white.opacity(0.6))
+            TextField(placeholder, text: $text)
+                .foregroundColor(.white)
+                .textInputAutocapitalization(autocapitalization)
+                .autocorrectionDisabled()
+                .keyboardType(keyboardType)
+                .padding(.horizontal, 12).padding(.vertical, 10)
+                .background(RoundedRectangle(cornerRadius: 9).fill(Color.white.opacity(0.08)))
+        }
+    }
+}
+
+// Dark navigation row, mirroring CloudLauncher's tile rows: white 0.05 fill,
+// 10pt radius, chevron.right at 0.4 opacity.
+struct CLRow: View {
+    let title: String
+    var value: String? = nil
+    var valueColor: Color = Color.white.opacity(0.55)
+    var showChevron: Bool = true
+    var action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Text(title).font(.system(size: 15, weight: .medium)).foregroundColor(.white)
+                Spacer()
+                if let value {
+                    Text(value).font(.system(size: 14)).foregroundColor(valueColor)
+                }
+                if showChevron {
+                    Image(systemName: "chevron.right").font(.system(size: 13)).foregroundColor(.white.opacity(0.4))
+                }
+            }
+            .padding(.horizontal, 12).padding(.vertical, 10)
+            .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.05)))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+// White capsule button with dark text, mirroring CloudLauncher's Play button.
+struct CLCapsuleButton: View {
+    let title: String
+    var icon: String? = nil
+    var fill: Color = .white
+    var textColor: Color = Color(hex: "0B0D12")
+    var action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                if let icon {
+                    Image(systemName: icon).font(.system(size: 13))
+                }
+                Text(title).font(.system(size: 14, weight: .semibold))
+            }
+            .padding(.horizontal, 16).padding(.vertical, 10)
+            .background(Capsule().fill(fill))
+            .foregroundColor(textColor)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+// The three graphics presets, shared by the home chips row and the settings
+// panel so the actions and alert messages can never drift apart.
+struct CLPresetButtons: View {
+    @ObservedObject var s: Settings
+    @Binding var resetAlertMessage: String
+    @Binding var showingResetAlert: Bool
+    var body: some View {
+        HStack(spacing: 8) {
+            CLCapsuleButton(title: "120 FPS", icon: "bolt.fill") {
+                s.apply120FpsBoost()
+                resetAlertMessage = "120 FPS Super Smooth setup enabled!"
+                showingResetAlert = true
+            }
+            CLCapsuleButton(title: "Save RAM", icon: "leaf.fill") {
+                s.applyLowRamMode()
+                resetAlertMessage = "Super RAM Saver setup enabled (~800MB)!"
+                showingResetAlert = true
+            }
+            CLCapsuleButton(title: "Ultra Low", icon: "arrow.down.to.line", fill: Color.orange, textColor: .white) {
+                s.applyUltraLowMode()
+                resetAlertMessage = "Ultra Low setup enabled — shadows & reflections off, 25% resolution!"
+                showingResetAlert = true
+            }
+        }
+    }
+}
+
+// Slide-in settings panel, mirroring CloudLauncher's panelOverlay: dim
+// backdrop 0.55 tap-to-close, panel min(92% screen width, 600) — 92% (not
+// CloudLauncher's 60%) because this launcher runs on iPhone portrait,
+// #11131B at 0.97 opacity, rounded 18, shadow. Every control from the old
+// Form lives here with the same bindings, actions and alert messages.
+struct CLSettingsPanel: View {
+    let screenWidth: CGFloat
+    @ObservedObject var s: Settings
+    @Binding var showingCheatSheet: Bool
+    @Binding var showingHUDEditor: Bool
+    @Binding var showingResetAlert: Bool
+    @Binding var resetAlertMessage: String
+    @Binding var newVehicleCode: String
+    var onClose: () -> Void
+
+    var body: some View {
+        ZStack(alignment: .trailing) {
+            Color.black.opacity(0.55)
+                .ignoresSafeArea()
+                .onTapGesture { onClose() }
+            VStack(alignment: .leading, spacing: 0) {
+                CLPanelHeader(title: "Settings", onClose: onClose)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 20) {
+                        CLSection("Character") {
+                            CLDarkField(label: "Character name", text: $s.name, placeholder: "Enter a character name...", autocapitalization: .words)
+                            Text("This name will show above your character's head when you play with friends.")
+                                .font(.system(size: 12)).foregroundColor(.white.opacity(0.5))
+                        }
+
+                        if !s.multiplayer {
+                            CLSection("Mode") {
+                                CLChipPicker(label: "Mode", selection: $s.mode, options: [
+                                    ("Story Mode", 1),
+                                    ("Sandbox (Free Roam)", 2)
+                                ])
+                            }
+                        }
+
+                        CLSection("Graphics Settings & Enable 120 FPS") {
+                            CLPresetButtons(s: s, resetAlertMessage: $resetAlertMessage, showingResetAlert: $showingResetAlert)
+                            CLChipPicker(label: "Frame rate (Frame Limit)", selection: $s.fps, options: [
+                                ("30 fps (Save battery)", 30),
+                                ("60 fps (Default)", 60),
+                                ("120 fps (Unlock 120 FPS / ProMotion)", 120)
+                            ])
+                            CLChipPicker(label: "Resolution", selection: $s.scale, options: [
+                                ("25% (Ultra low)", 0.25),
+                                ("35% (Super light)", 0.35),
+                                ("50% (Recommended for 120 FPS)", 0.5),
+                                ("65% (Balanced)", 0.65),
+                                ("75% (Sharp)", 0.75),
+                                ("100% (Native resolution)", 1.0)
+                            ])
+                            CLChipPicker(label: "Texture Quality", selection: $s.textures, options: [
+                                ("Normal / Low (Uses less RAM)", 0),
+                                ("Cao", 1),
+                                ("Very High", 2)
+                            ])
+                            CLToggle(title: "Lock ProMotion V-Sync 120Hz pacing (CADisplayLink)", isOn: $s.promotionSync)
+                            Text("Syncs precisely with your iPhone/iPad screen's 60Hz/120Hz refresh rate to remove stutter and keep 120 FPS as smooth as possible.")
+                                .font(.system(size: 12)).foregroundColor(.white.opacity(0.5))
+                            CLToggle(title: "Deep graphics optimization (Deep Optimization 60-120 FPS Boost)", isOn: $s.deepOptimization)
+                            Text("Automatically limits shadows, dense grass, and anti-aliasing in GTA V settings.xml to hold max FPS when the device heats up.")
+                                .font(.system(size: 12)).foregroundColor(.white.opacity(0.5))
+                            Button(action: {
+                                resetGraphicsSettings()
+                                s.scale = 0.5
+                                s.textures = 0
+                                s.fps = 120
+                                s.shadowQuality = 1
+                                s.shadowDistance = 1.0
+                                s.reflectionQuality = 1
+                                s.grassQuality = 0
+                                s.waterQuality = 0
+                                s.particleQuality = 0
+                                s.postFx = 0
+                                s.anisotropicFiltering = 0
+                                s.fxaa = true
+                                s.cityDensity = 0.5
+                                s.pedDensity = 0.5
+                                s.distanceScaling = 0.0
+                                s.deepOptimization = true
+                                s.ultraLow = false
+                                s.promotionSync = true
+                                try? s.save()
+                                muguet_reload_settings()
+                                resetAlertMessage = "Restored Rockstar GTA V graphics to safe defaults (Shader High, MSAA Off, Shadows Normal, 120 FPS). The black screen caused by Max Settings is fully fixed!"
+                                showingResetAlert = true
+                            }) {
+                                Label("Restore original graphics (Fix black screen)", systemImage: "arrow.counterclockwise.circle.fill")
+                                    .font(.system(size: 15, weight: .semibold))
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 11)
+                                    .background(Capsule().stroke(Color.red.opacity(0.6), lineWidth: 1))
+                                    .foregroundColor(.red)
+                            }
+                            .buttonStyle(.plain)
+                        }
+
+                        CLSection("Detailed GTA V Graphics Settings (In-Game Graphics)") {
+                            Text("Set GTA V graphics options right here without changing them in-game.")
+                                .font(.system(size: 12)).foregroundColor(.white.opacity(0.5))
+                            CLChipPicker(label: "Shadow Quality", selection: $s.shadowQuality, options: [
+                                ("Off (No shadows)", 0),
+                                ("Normal (Smoothest)", 1),
+                                ("Cao", 2),
+                                ("Very High", 3)
+                            ])
+                            CLChipPicker(label: "Shadow Distance", selection: $s.shadowDistance, options: [
+                                ("Short (0.5× - Save RAM)", 0.5),
+                                ("Standard (1.0×)", 1.0),
+                                ("Xa (1.5×)", 1.5)
+                            ])
+                            CLChipPicker(label: "Reflection Quality", selection: $s.reflectionQuality, options: [
+                                ("Off (No reflections)", 0),
+                                ("Normal", 1),
+                                ("Cao", 2),
+                                ("Very High", 3)
+                            ])
+                            CLChipPicker(label: "Grass & Vegetation Quality", selection: $s.grassQuality, options: [
+                                ("Normal (Prevents FPS drops in hills)", 0),
+                                ("Cao", 1),
+                                ("Very High", 2)
+                            ])
+                            CLChipPicker(label: "Water Quality", selection: $s.waterQuality, options: [
+                                ("Normal", 0),
+                                ("Cao", 1),
+                                ("Very High", 2)
+                            ])
+                            CLChipPicker(label: "Particle & Explosion Effect Quality", selection: $s.particleQuality, options: [
+                                ("Normal", 0),
+                                ("Cao", 1),
+                                ("Very High", 2)
+                            ])
+                            CLChipPicker(label: "Post FX & Lighting", selection: $s.postFx, options: [
+                                ("Normal (Best FPS)", 0),
+                                ("High (Bloom & Sun rays)", 1),
+                                ("Very High", 2)
+                            ])
+                            CLChipPicker(label: "Surface Detail Filtering (Anisotropic Filtering)", selection: $s.anisotropicFiltering, options: [
+                                ("Off (x0)", 0),
+                                ("x4", 4),
+                                ("x8", 8),
+                                ("x16 (Sharp road detail)", 16)
+                            ])
+                            CLToggle(title: "Edge anti-aliasing (FXAA)", isOn: $s.fxaa)
+                            CLChipPicker(label: "Traffic Density", selection: $s.cityDensity, options: [
+                                ("Empty (0% - Smoothest)", 0.0),
+                                ("Medium (50%)", 0.5),
+                                ("Heavy (100% - Like PC)", 1.0)
+                            ])
+                            CLChipPicker(label: "Pedestrian Density & Variety", selection: $s.pedDensity, options: [
+                                ("Low (0% - Save RAM)", 0.0),
+                                ("Medium (50%)", 0.5),
+                                ("Heavy (100%)", 1.0)
+                            ])
+                            CLChipPicker(label: "Draw Distance & Object Detail (LOD Scale)", selection: $s.distanceScaling, options: [
+                                ("Save RAM (-0.5)", -0.5),
+                                ("Standard (0.0)", 0.0),
+                                ("Far view (+0.5)", 0.5)
+                            ])
+                        }
+
+                        CLSection("Controls") {
+                            Button(action: { showingHUDEditor = true }) {
+                                Label("Adjust button position & size visually (HUD Editor)", systemImage: "hand.draw.fill")
+                                    .font(.system(size: 15, weight: .semibold))
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 11)
+                                    .background(Capsule().fill(Color.white))
+                                    .foregroundColor(Color(hex: "0B0D12"))
+                            }
+                            .buttonStyle(.plain)
+                            Button("Reset buttons to default") {
+                                s.resetLayout()
+                            }
+                            .font(.system(size: 14))
+                            .foregroundColor(.orange)
+                            HStack {
+                                Text("Look sensitivity").foregroundColor(.white)
+                                Slider(value: $s.touch, in: 0.25...6.0, step: 0.25).tint(.white)
+                                Text(String(format: "%.2f×", s.touch)).monospacedDigit().frame(width: 55, alignment: .trailing).foregroundColor(.white)
+                            }
+                            HStack {
+                                Text("Gamepad sensitivity").foregroundColor(.white)
+                                Slider(value: $s.padSensitivity, in: 0.25...4.0, step: 0.25).tint(.white)
+                                Text(String(format: "%.2f×", s.padSensitivity)).monospacedDigit().frame(width: 55, alignment: .trailing).foregroundColor(.white)
+                            }
+                            CLChipPicker(label: "Aim button", selection: $s.aimMode, options: [
+                                ("Tap to toggle", "toggle"),
+                                ("Hold to aim", "hold")
+                            ])
+                            CLToggle(title: "Aim while firing", isOn: $s.fireAim)
+                            HStack {
+                                Text("Aim sensitivity").foregroundColor(.white)
+                                Slider(value: $s.aimSensitivity, in: 0.1...3.0, step: 0.1).tint(.white)
+                                Text(String(format: "%.2f×", s.aimSensitivity)).monospacedDigit().frame(width: 55, alignment: .trailing).foregroundColor(.white)
+                            }
+                            Text("Drag on the right FIRE button to adjust aim while shooting. The left FIRE button frees your right thumb to aim.")
+                                .font(.system(size: 12)).foregroundColor(.white.opacity(0.5))
+                            CLToggle(title: "Mute audio", isOn: $s.mute)
+                        }
+
+                        CLSection("Play Online (Multiplayer)") {
+                            CLToggle(title: "Enable Multiplayer mode", isOn: $s.multiplayer)
+                            if s.multiplayer {
+                                CLChipPicker(label: "Room mode", selection: $s.roomMode, options: [
+                                    ("Create room", "create"),
+                                    ("Join room", "join"),
+                                    ("Public", "public"),
+                                    ("LAN Host", "lan")
+                                ])
+                                if s.roomMode == "create" {
+                                    createForm
+                                } else if s.roomMode == "join" {
+                                    joinForm
+                                } else if s.roomMode == "public" {
+                                    publicForm
+                                } else {
+                                    lanForm
+                                }
+                                DisclosureGroup("Server (Advanced)") {
+                                    CLDarkField(label: "Server IP", text: $s.server, placeholder: "18.143.103.253", keyboardType: .numbersAndPunctuation)
+                                    HStack {
+                                        Circle().fill(Color.green).frame(width: 8, height: 8)
+                                        Text("AWS iOSVN Singapore server (Ping ~40ms, Supports 32 / 64 players)")
+                                            .font(.system(size: 12)).foregroundColor(.white.opacity(0.55))
+                                    }
+                                }
+                                .foregroundColor(.white)
+                            }
+                        }
+
+                        if !s.multiplayer {
+                            CLSection("GTA V Cheat Codes (Offline only)") {
+                                Button(action: { showingCheatSheet = true }) {
+                                    Label("View & Activate Cheat Codes", systemImage: "wand.and.stars")
+                                        .font(.system(size: 15, weight: .semibold))
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.vertical, 11)
+                                        .background(Capsule().fill(Color.white))
+                                        .foregroundColor(Color(hex: "0B0D12"))
+                                }
+                                .buttonStyle(.plain)
+                                Text("Quickly look up and activate cheat codes (invincibility, full weapons, helicopter, race cars...). Cheat codes are auto-locked in Online mode.")
+                                    .font(.system(size: 12)).foregroundColor(.white.opacity(0.5))
+                            }
+                        }
+
+                        if !s.multiplayer {
+                            CLSection("Sandbox Vehicles") {
+                                CLToggle(title: "Auto-spawn vehicle in Sandbox", isOn: $s.sandboxAutoSpawn)
+                                    .onChange(of: s.sandboxAutoSpawn) { _ in try? s.save() }
+                                Text("When on, every Sandbox session starts you inside the first vehicle below. Turn it off if the spawn ever causes trouble — the CAR button and the in-game menu still work.")
+                                    .font(.system(size: 12)).foregroundColor(.white.opacity(0.5))
+                                VStack(spacing: 6) {
+                                    ForEach(s.sandboxVehicles, id: \.self) { code in
+                                        HStack {
+                                            Text(code).font(.body.monospaced()).foregroundColor(.white)
+                                            Spacer()
+                                            if code == s.sandboxVehicles.first {
+                                                Text("starter").font(.system(size: 12)).foregroundColor(.white.opacity(0.55))
+                                            }
+                                            Button(action: {
+                                                s.sandboxVehicles.removeAll { $0 == code }
+                                                try? s.save()
+                                            }) {
+                                                Image(systemName: "trash")
+                                                    .font(.system(size: 13))
+                                                    .foregroundColor(.red)
+                                            }
+                                            .buttonStyle(.plain)
+                                        }
+                                        .padding(.horizontal, 12).padding(.vertical, 8)
+                                        .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.05)))
+                                    }
+                                }
+                                HStack {
+                                    TextField("Add a vehicle code (e.g. loweyezv)", text: $newVehicleCode)
+                                        .textInputAutocapitalization(.never)
+                                        .autocorrectionDisabled()
+                                        .foregroundColor(.white)
+                                        .padding(.horizontal, 12).padding(.vertical, 10)
+                                        .background(RoundedRectangle(cornerRadius: 9).fill(Color.white.opacity(0.08)))
+                                    Button("Add") {
+                                        let c = newVehicleCode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                                        guard !c.isEmpty, !s.sandboxVehicles.contains(c) else { return }
+                                        s.sandboxVehicles.append(c)
+                                        newVehicleCode = ""
+                                        try? s.save()
+                                    }
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundColor(Color(hex: "0B0D12"))
+                                    .padding(.horizontal, 16).padding(.vertical, 10)
+                                    .background(Capsule().fill(Color.white))
+                                    .buttonStyle(.plain)
+                                    .disabled(newVehicleCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                                }
+                            }
+                        }
+
+                        CLSection("Save Data") {
+                            CLRow(title: "Share / Backup saves") { shareSaves() }
+                            Text("In game: save via Phone > Quick Save, or Pause > Game > Save Game. Saves are stored in Files app > On My iPhone > GTA V > saves.")
+                                .font(.system(size: 12)).foregroundColor(.white.opacity(0.5))
+                        }
+
+                        CLSection("Diagnostics") {
+                            CLRow(title: "Share startup / memory logs") { shareDiagnostics() }
+                            Text("After a crash, reopen GTA V and share the previous log. Logs contain connection addresses and runtime errors, not game files.")
+                                .font(.system(size: 12)).foregroundColor(.white.opacity(0.5))
+                        }
+                    }
+                    .padding(.horizontal, 22)
+                    .padding(.bottom, 24)
+                }
+            }
+            .frame(width: min(screenWidth * 0.92, 600))
+            .frame(maxHeight: .infinity)
+            .background(Color(hex: "11131B").opacity(0.97))
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .shadow(color: .black.opacity(0.6), radius: 30, x: -10)
+            .padding(.vertical, 10)
+            .padding(.trailing, 10)
+            .transition(.move(edge: .trailing))
+        }
+        .environment(\.colorScheme, .dark)
+    }
+
+    private var createForm: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("1. Pick a room mode:").font(.system(size: 15, weight: .semibold)).foregroundColor(.white)
+                CLChipPicker(label: "Mode", selection: $s.mode, options: [
+                    ("Story Mode", 1),
+                    ("Sandbox (Free Roam)", 2)
+                ])
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Text("2. Damage rules (PvP):").font(.system(size: 15, weight: .semibold)).foregroundColor(.white)
+                CLChipPicker(label: "PvP", selection: $s.pvp, options: [
+                    ("Peaceful (Co-op)", false),
+                    ("Arena (PvP)", true)
+                ])
+                Text(s.pvp ? "PvP On: Players can shoot and kill each other." : "Peaceful: No damage to each other, no spawn killing.")
+                    .font(.system(size: 12)).foregroundColor(.white.opacity(0.55))
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Text("3. Max players (Server capacity):").font(.system(size: 15, weight: .semibold)).foregroundColor(.white)
+                CLChipPicker(label: "Player limit", selection: $s.maxPlayers, options: [
+                    ("32 players", 32),
+                    ("64 players", 64)
+                ])
+                Text("Creating a room supports up to \(s.maxPlayers) players online at the same time.")
+                    .font(.system(size: 12)).foregroundColor(.white.opacity(0.55))
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Text("4. Room code to share with friends:").font(.system(size: 15, weight: .semibold)).foregroundColor(.white)
+                HStack(spacing: 8) {
+                    Text(s.formattedCreateCode)
+                        .font(.title2.monospaced().bold())
+                        .foregroundStyle(Color(hex: "7EE787"))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(Color(hex: "7EE787").opacity(0.15))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .fixedSize(horizontal: true, vertical: false)
+                        .layoutPriority(2)
+                    Spacer(minLength: 4)
+                    Button(action: {
+                        s.roomDigits = String(Int.random(in: 1000...9999))
+                    }) {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.caption.bold())
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 7)
+                    }
+                    .buttonStyle(.bordered)
+                    .help("Change code")
+                    Button(action: {
+                        UIPasteboard.general.string = s.formattedCreateCode
+                    }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "doc.on.doc")
+                            Text("Copy")
+                        }
+                        .font(.caption.bold())
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 7)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .fixedSize()
+                }
+            }
+            HStack {
+                Image(systemName: "lock.fill").foregroundStyle(.secondary)
+                TextField("Room password (Optional)", text: $s.roomPass)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 12).padding(.vertical, 10)
+                    .background(RoundedRectangle(cornerRadius: 9).fill(Color.white.opacity(0.08)))
+            }
+            HStack(spacing: 8) {
+                Label(s.mode == 1 ? "Story Mode" : "Sandbox", systemImage: "gamecontroller")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(s.mode == 1 ? .orange : .cyan)
+                Text("•").foregroundColor(.white.opacity(0.55))
+                Label(s.pvp ? "PvP On" : "Peaceful Co-op", systemImage: s.pvp ? "burst.fill" : "shield.fill")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(s.pvp ? .red : .green)
+                Text("•").foregroundColor(.white.opacity(0.55))
+                Label(s.roomPass.isEmpty ? "Open Room" : "Has Password", systemImage: s.roomPass.isEmpty ? "lock.open" : "lock")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(8)
+            .background(Color.secondary.opacity(0.1))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+    }
+
+    private var joinForm: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Enter room code:").font(.system(size: 15, weight: .semibold)).foregroundColor(.white)
+                TextField("Example: SP-8621 or BX-5520", text: $s.joinCode)
+                    .font(.title3.monospaced().bold())
+                    .foregroundColor(.white)
+                    .textInputAutocapitalization(.characters)
+                    .autocorrectionDisabled()
+                    .padding(.horizontal, 12).padding(.vertical, 10)
+                    .background(RoundedRectangle(cornerRadius: 9).fill(Color.white.opacity(0.08)))
+                    .onChange(of: s.joinCode) { val in
+                        s.parseJoinCode(val)
+                    }
+            }
+            let clean = s.joinCode.trimmingCharacters(in: .whitespaces).uppercased()
+            if !clean.isEmpty {
+                HStack(spacing: 8) {
+                    Label(s.mode == 1 ? "Story Mode" : "Sandbox", systemImage: "gamecontroller")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(s.mode == 1 ? .orange : .cyan)
+                    Text("•").foregroundColor(.white.opacity(0.55))
+                    Label(s.pvp ? "PvP On" : "Peaceful Co-op", systemImage: s.pvp ? "burst.fill" : "shield.fill")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(s.pvp ? .red : .green)
+                    Spacer()
+                    Text("Auto-synced")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(8)
+                .background(Color(hex: "7EE787").opacity(0.12))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            } else {
+                Text("Game mode (Story / Sandbox) and PvP rules auto-sync to the host's room code.")
+                    .font(.system(size: 12)).foregroundColor(.white.opacity(0.55))
+            }
+            HStack {
+                Image(systemName: "lock.fill").foregroundStyle(.secondary)
+                TextField("Room password (if the host set one)", text: $s.roomPass)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 12).padding(.vertical, 10)
+                    .background(RoundedRectangle(cornerRadius: 9).fill(Color.white.opacity(0.08)))
+            }
+            Text("Note: PvP damage rules and game mode follow the host completely, you can't change them yourself.")
+                .font(.system(size: 12)).foregroundColor(.orange)
+        }
+    }
+
+    private var publicForm: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            CLChipPicker(label: "Public region", selection: $s.mode, options: [
+                ("Story Mode Public", 1),
+                ("Sandbox Public", 2)
+            ])
+            HStack {
+                Image(systemName: "globe.americas.fill").foregroundStyle(.green)
+                Text("Public shared lobby (Supports 32 / 64 players per room)")
+                    .fontWeight(.medium)
+                    .foregroundColor(.white)
+            }
+            Text("Auto-connects to the shared lobby with players online on the AWS iOSVN server. Peaceful mode is on by default.")
+                .font(.system(size: 12)).foregroundColor(.white.opacity(0.55))
+        }
+    }
+
+    private var lanForm: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            CLChipPicker(label: "LAN Mode", selection: $s.mode, options: [
+                ("Story Mode", 1),
+                ("Sandbox", 2)
+            ])
+            Text("Host a room on Wi-Fi (Up to \(s.maxPlayers) players): Connect via: \(localIPs().joined(separator: " or "))")
+                .font(.system(size: 15)).textSelection(.enabled).foregroundColor(.white)
+        }
+    }
+}
+
 struct LauncherView: View {
     @StateObject private var s = Settings()
     @ObservedObject private var importer = Importer.shared
@@ -1142,556 +1853,73 @@ struct LauncherView: View {
     @State private var showingResetAlert = false
     @State private var resetAlertMessage = ""
     @State private var newVehicleCode = ""
+    @State private var showingSettings = false
     var isOverlay: Bool = false
     let play: () -> Void
 
+    // Mode rail selection, derived from the same vars the old pickers set:
+    // 0 Story, 1 Sandbox, 2 Online.
+    private var selectedMode: Int {
+        if s.multiplayer { return 2 }
+        return s.mode == 1 ? 0 : 1
+    }
+
+    private func selectMode(_ index: Int) {
+        if index == 2 {
+            s.multiplayer = true
+        } else {
+            s.multiplayer = false
+            s.mode = index == 0 ? 1 : 2
+        }
+    }
+
+    private var modeName: String {
+        if s.multiplayer { return "Online" }
+        return s.mode == 1 ? "Story" : "Sandbox"
+    }
+
+    private var statusLine: String {
+        if !muguet_has_game_code() { return "No game code in this build" }
+        if importer.progress != nil { return "Importing game data…" }
+        if !importer.ready { return "Import game data to play" }
+        return "\(modeName) · Game data ready"
+    }
+
     var body: some View {
-        HStack(spacing: 0) {
-            VStack(spacing: 16) {
-                Text(isOverlay ? "GTA V Menu" : "GTA V").font(.largeTitle.weight(.bold))
-                if !muguet_has_game_code() {
-                    Text("This build has no game code: build it with ./make-ios.sh <game.zip>.")
-                        .foregroundStyle(.red).font(.callout).multilineTextAlignment(.center)
-                } else if !importer.ready || importer.progress != nil {
-                    importView
-                } else if isOverlay {
-                    Button(action: resumeAndSave) {
-                        Text("Continue (Resume)").font(.title3.weight(.semibold)).frame(maxWidth: 220)
-                    }
-                    .controlSize(.large)
-                    .buttonStyle(.borderedProminent)
-                    .tint(.green)
-
-                    Button(action: { suspendApp() }) {
-                        Text("Quit the app (Exit)").font(.callout.weight(.medium)).frame(maxWidth: 220)
-                    }
-                    .controlSize(.regular)
-                    .buttonStyle(.bordered)
-                    .tint(.red)
-                } else {
-                    if let error { Text(error).foregroundStyle(.red).font(.callout).multilineTextAlignment(.center) }
-                    playButton
-                    Button("Import other game data…") { picking = true }.font(.caption)
-                }
-                Text("proudly made by c22dev").font(.caption).foregroundStyle(.secondary)
-                Text("Rebuild: iOSVN").font(.caption).foregroundStyle(.secondary)
-            }
-            .padding(24)
-            .frame(maxWidth: .infinity)
-            Form {
-                Section("Character name / Player") {
-                    HStack {
-                        Image(systemName: "person.crop.circle.fill")
-                            .foregroundStyle(.blue)
-                        TextField("Enter a character name...", text: $s.name)
-                            .textInputAutocapitalization(.words)
-                            .autocorrectionDisabled()
-                    }
-                    Text("This name will show above your character's head when you play with friends.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-
-                if !s.multiplayer {
-                    Picker("Mode", selection: $s.mode) {
-                        Text("Story Mode").tag(1)
-                        Text("Sandbox (Free Roam)").tag(2)
-                    }
-                }
-
-                Section("Graphics Settings & Enable 120 FPS") {
-                    HStack(spacing: 10) {
-                        Button(action: {
-                            s.apply120FpsBoost()
-                            resetAlertMessage = "120 FPS Super Smooth setup enabled!"
-                            showingResetAlert = true
-                        }) {
-                            HStack(spacing: 4) {
-                                Image(systemName: "bolt.fill")
-                                Text("120 FPS Super Smooth").bold()
-                            }
-                            .font(.subheadline)
-                            .frame(maxWidth: .infinity)
+        GeometryReader { geo in
+            ZStack(alignment: .topLeading) {
+                Color.black.ignoresSafeArea()
+                // Static dark-green glow across the top, GTA V brand green.
+                // No TimelineView animation: the launcher stays still and fast.
+                Circle()
+                    .fill(Color(hex: "1F7A33").opacity(0.30))
+                    .frame(width: 560, height: 400)
+                    .blur(radius: 110)
+                    .offset(x: geo.size.width * 0.5 - 280, y: -190)
+                VStack(alignment: .leading, spacing: 0) {
+                    headerRow
+                    ScrollView(.vertical, showsIndicators: false) {
+                        VStack(alignment: .leading, spacing: 22) {
+                            hero
+                            modeRail
+                            presetChips
+                            quickRows
+                            footer
                         }
-                        .buttonStyle(.borderedProminent)
-                        .tint(.indigo)
-                        .controlSize(.regular)
-
-                        Button(action: {
-                            s.applyLowRamMode()
-                            resetAlertMessage = "Super RAM Saver setup enabled (~800MB)!"
-                            showingResetAlert = true
-                        }) {
-                            HStack(spacing: 4) {
-                                Image(systemName: "leaf.fill")
-                                Text("Save RAM").bold()
-                            }
-                            .font(.subheadline)
-                            .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.bordered)
-                        .tint(.green)
-                        .controlSize(.regular)
-                    }
-                    HStack(spacing: 10) {
-                        Button(action: {
-                            s.applyUltraLowMode()
-                            resetAlertMessage = "Ultra Low setup enabled — shadows & reflections off, 25% resolution!"
-                            showingResetAlert = true
-                        }) {
-                            HStack(spacing: 4) {
-                                Image(systemName: "arrow.down.to.line")
-                                Text("Ultra Low").bold()
-                            }
-                            .font(.subheadline)
-                            .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.bordered)
-                        .tint(.orange)
-                        .controlSize(.regular)
-                    }
-                    .padding(.vertical, 2)
-
-                    Picker("Frame rate (Frame Limit)", selection: $s.fps) {
-                        Text("30 fps (Save battery)").tag(30)
-                        Text("60 fps (Default)").tag(60)
-                        Text("120 fps (Unlock 120 FPS / ProMotion)").tag(120)
-                    }
-
-                    Picker("Resolution", selection: $s.scale) {
-                        Text("25% (Ultra low)").tag(0.25)
-                        Text("35% (Super light)").tag(0.35)
-                        Text("50% (Recommended for 120 FPS)").tag(0.5)
-                        Text("65% (Balanced)").tag(0.65)
-                        Text("75% (Sharp)").tag(0.75)
-                        Text("100% (Native resolution)").tag(1.0)
-                    }
-
-                    Picker("Texture Quality", selection: $s.textures) {
-                        Text("Normal / Low (Uses less RAM)").tag(0)
-                        Text("Cao").tag(1)
-                        Text("Very High").tag(2)
-                    }
-
-                    Toggle("Lock ProMotion V-Sync 120Hz pacing (CADisplayLink)", isOn: $s.promotionSync)
-                    Text("Syncs precisely with your iPhone/iPad screen's 60Hz/120Hz refresh rate to remove stutter and keep 120 FPS as smooth as possible.")
-                        .font(.caption).foregroundStyle(.secondary)
-
-                    Toggle("Deep graphics optimization (Deep Optimization 60-120 FPS Boost)", isOn: $s.deepOptimization)
-                    Text("Automatically limits shadows, dense grass, and anti-aliasing in GTA V settings.xml to hold max FPS when the device heats up.")
-                        .font(.caption).foregroundStyle(.secondary)
-
-                    Button(action: {
-                        resetGraphicsSettings()
-                        s.scale = 0.5
-                        s.textures = 0
-                        s.fps = 120
-                        s.shadowQuality = 1
-                        s.shadowDistance = 1.0
-                        s.reflectionQuality = 1
-                        s.grassQuality = 0
-                        s.waterQuality = 0
-                        s.particleQuality = 0
-                        s.postFx = 0
-                        s.anisotropicFiltering = 0
-                        s.fxaa = true
-                        s.cityDensity = 0.5
-                        s.pedDensity = 0.5
-                        s.distanceScaling = 0.0
-                        s.deepOptimization = true
-                        s.ultraLow = false
-                        s.promotionSync = true
-                        try? s.save()
-                        muguet_reload_settings()
-                        resetAlertMessage = "Restored Rockstar GTA V graphics to safe defaults (Shader High, MSAA Off, Shadows Normal, 120 FPS). The black screen caused by Max Settings is fully fixed!"
-                        showingResetAlert = true
-                    }) {
-                        Label("Restore original graphics (Fix black screen)", systemImage: "arrow.counterclockwise.circle.fill")
-                            .font(.subheadline.bold())
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.red)
-                }
-
-                Section("🎮 Detailed GTA V Graphics Settings (In-Game Graphics)") {
-                    Text("Set GTA V graphics options right here without changing them in-game.")
-                        .font(.caption).foregroundStyle(.secondary)
-
-                    Picker("Shadow Quality", selection: $s.shadowQuality) {
-                        Text("Off (No shadows)").tag(0)
-                        Text("Normal (Smoothest)").tag(1)
-                        Text("Cao").tag(2)
-                        Text("Very High").tag(3)
-                    }
-
-                    Picker("Shadow Distance", selection: $s.shadowDistance) {
-                        Text("Short (0.5× - Save RAM)").tag(0.5)
-                        Text("Standard (1.0×)").tag(1.0)
-                        Text("Xa (1.5×)").tag(1.5)
-                    }
-
-                    Picker("Reflection Quality", selection: $s.reflectionQuality) {
-                        Text("Off (No reflections)").tag(0)
-                        Text("Normal").tag(1)
-                        Text("Cao").tag(2)
-                        Text("Very High").tag(3)
-                    }
-
-                    Picker("Grass & Vegetation Quality", selection: $s.grassQuality) {
-                        Text("Normal (Prevents FPS drops in hills)").tag(0)
-                        Text("Cao").tag(1)
-                        Text("Very High").tag(2)
-                    }
-
-                    Picker("Water Quality", selection: $s.waterQuality) {
-                        Text("Normal").tag(0)
-                        Text("Cao").tag(1)
-                        Text("Very High").tag(2)
-                    }
-
-                    Picker("Particle & Explosion Effect Quality", selection: $s.particleQuality) {
-                        Text("Normal").tag(0)
-                        Text("Cao").tag(1)
-                        Text("Very High").tag(2)
-                    }
-
-                    Picker("Post FX & Lighting", selection: $s.postFx) {
-                        Text("Normal (Best FPS)").tag(0)
-                        Text("High (Bloom & Sun rays)").tag(1)
-                        Text("Very High").tag(2)
-                    }
-
-                    Picker("Surface Detail Filtering (Anisotropic Filtering)", selection: $s.anisotropicFiltering) {
-                        Text("Off (x0)").tag(0)
-                        Text("x4").tag(4)
-                        Text("x8").tag(8)
-                        Text("x16 (Sharp road detail)").tag(16)
-                    }
-
-                    Toggle("Edge anti-aliasing (FXAA)", isOn: $s.fxaa)
-
-                    Picker("Traffic Density", selection: $s.cityDensity) {
-                        Text("Empty (0% - Smoothest)").tag(0.0)
-                        Text("Medium (50%)").tag(0.5)
-                        Text("Heavy (100% - Like PC)").tag(1.0)
-                    }
-
-                    Picker("Pedestrian Density & Variety", selection: $s.pedDensity) {
-                        Text("Low (0% - Save RAM)").tag(0.0)
-                        Text("Medium (50%)").tag(0.5)
-                        Text("Heavy (100%)").tag(1.0)
-                    }
-
-                    Picker("Draw Distance & Object Detail (LOD Scale)", selection: $s.distanceScaling) {
-                        Text("Save RAM (-0.5)").tag(-0.5)
-                        Text("Standard (0.0)").tag(0.0)
-                        Text("Far view (+0.5)").tag(0.5)
+                        .padding(.horizontal, 24)
+                        .padding(.top, 8)
+                        .padding(.bottom, 24)
                     }
                 }
-
-                Section("Customize Button Layout (Touch Controls)") {
-                    Button(action: { showingHUDEditor = true }) {
-                        Label("Adjust button position & size visually (HUD Editor)", systemImage: "hand.draw.fill")
-                            .font(.subheadline.bold())
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.blue)
-
-                    Button("Reset buttons to default") {
-                        s.resetLayout()
-                    }
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-                }
-
-                HStack {
-                    Text("Look sensitivity")
-                    Slider(value: $s.touch, in: 0.25...6.0, step: 0.25)
-                    Text(String(format: "%.2f×", s.touch)).monospacedDigit().frame(width: 55, alignment: .trailing)
-                }
-                HStack {
-                    Text("Gamepad sensitivity")
-                    Slider(value: $s.padSensitivity, in: 0.25...4.0, step: 0.25)
-                    Text(String(format: "%.2f×", s.padSensitivity)).monospacedDigit().frame(width: 55, alignment: .trailing)
-                }
-                Section("Aiming") {
-                    Picker("Aim button", selection: $s.aimMode) {
-                        Text("Tap to toggle").tag("toggle")
-                        Text("Hold to aim").tag("hold")
-                    }
-                    Toggle("Aim while firing", isOn: $s.fireAim)
-                    HStack {
-                        Text("Aim sensitivity")
-                        Slider(value: $s.aimSensitivity, in: 0.1...3.0, step: 0.1)
-                        Text(String(format: "%.2f×", s.aimSensitivity)).monospacedDigit().frame(width: 55, alignment: .trailing)
-                    }
-                    Text("Drag on the right FIRE button to adjust aim while shooting. The left FIRE button frees your right thumb to aim.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                Toggle("Mute audio", isOn: $s.mute)
-
-                Section("Play Online (Multiplayer)") {
-                    Toggle("Enable Multiplayer mode", isOn: $s.multiplayer)
-                    if s.multiplayer {
-                        Picker("Room mode", selection: $s.roomMode) {
-                            Text("Create room").tag("create")
-                            Text("Join room").tag("join")
-                            Text("Public").tag("public")
-                            Text("LAN Host").tag("lan")
-                        }
-                        .pickerStyle(.segmented)
-
-                        if s.roomMode == "create" {
-                            VStack(alignment: .leading, spacing: 12) {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text("1. Pick a room mode:").font(.subheadline.bold())
-                                    Picker("Mode", selection: $s.mode) {
-                                        Text("Story Mode").tag(1)
-                                        Text("Sandbox (Free Roam)").tag(2)
-                                    }
-                                    .pickerStyle(.segmented)
-                                }
-
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text("2. Damage rules (PvP):").font(.subheadline.bold())
-                                    Picker("PvP", selection: $s.pvp) {
-                                        Text("🛡️ Peaceful (Co-op)").tag(false)
-                                        Text("⚔️ Arena (PvP)").tag(true)
-                                    }
-                                    .pickerStyle(.segmented)
-                                    Text(s.pvp ? "PvP On: Players can shoot and kill each other." : "Peaceful: No damage to each other, no spawn killing.")
-                                        .font(.caption2).foregroundStyle(.secondary)
-                                }
-
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text("3. Max players (Server capacity):").font(.subheadline.bold())
-                                    Picker("Player limit", selection: $s.maxPlayers) {
-                                        Text("32 players").tag(32)
-                                        Text("64 players").tag(64)
-                                    }
-                                    .pickerStyle(.segmented)
-                                    Text("Creating a room supports up to \(s.maxPlayers) players online at the same time.")
-                                        .font(.caption2).foregroundStyle(.secondary)
-                                }
-
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text("4. Room code to share with friends:").font(.subheadline.bold())
-                                    HStack(spacing: 8) {
-                                        Text(s.formattedCreateCode)
-                                            .font(.title2.monospaced().bold())
-                                            .foregroundStyle(.green)
-                                            .padding(.horizontal, 10)
-                                            .padding(.vertical, 6)
-                                            .background(Color.green.opacity(0.15))
-                                            .clipShape(RoundedRectangle(cornerRadius: 8))
-                                            .fixedSize(horizontal: true, vertical: false)
-                                            .layoutPriority(2)
-
-                                        Spacer(minLength: 4)
-
-                                        Button(action: {
-                                            s.roomDigits = String(Int.random(in: 1000...9999))
-                                        }) {
-                                            Image(systemName: "arrow.clockwise")
-                                                .font(.caption.bold())
-                                                .padding(.horizontal, 8)
-                                                .padding(.vertical, 7)
-                                        }
-                                        .buttonStyle(.bordered)
-                                        .help("Change code")
-
-                                        Button(action: {
-                                            UIPasteboard.general.string = s.formattedCreateCode
-                                        }) {
-                                            HStack(spacing: 4) {
-                                                Image(systemName: "doc.on.doc")
-                                                Text("Copy")
-                                            }
-                                            .font(.caption.bold())
-                                            .padding(.horizontal, 10)
-                                            .padding(.vertical, 7)
-                                        }
-                                        .buttonStyle(.borderedProminent)
-                                        .fixedSize()
-                                    }
-                                }
-
-                                HStack {
-                                    Image(systemName: "lock.fill").foregroundStyle(.secondary)
-                                    TextField("Room password (Optional)", text: $s.roomPass)
-                                        .textInputAutocapitalization(.never)
-                                        .autocorrectionDisabled()
-                                }
-
-                                HStack(spacing: 8) {
-                                    Label(s.mode == 1 ? "Story Mode" : "Sandbox", systemImage: "gamecontroller")
-                                        .font(.caption.bold())
-                                        .foregroundStyle(s.mode == 1 ? .orange : .cyan)
-                                    Text("•")
-                                    Label(s.pvp ? "PvP On" : "Peaceful Co-op", systemImage: s.pvp ? "burst.fill" : "shield.fill")
-                                        .font(.caption.bold())
-                                        .foregroundStyle(s.pvp ? .red : .green)
-                                    Text("•")
-                                    Label(s.roomPass.isEmpty ? "Open Room" : "Has Password", systemImage: s.roomPass.isEmpty ? "lock.open" : "lock")
-                                        .font(.caption.bold())
-                                        .foregroundStyle(.secondary)
-                                }
-                                .padding(8)
-                                .background(Color.secondary.opacity(0.1))
-                                .clipShape(RoundedRectangle(cornerRadius: 8))
-                            }
-                        } else if s.roomMode == "join" {
-                            VStack(alignment: .leading, spacing: 12) {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text("Enter room code:").font(.subheadline.bold())
-                                    TextField("Example: SP-8621 or BX-5520", text: $s.joinCode)
-                                        .font(.title3.monospaced().bold())
-                                        .textInputAutocapitalization(.characters)
-                                        .autocorrectionDisabled()
-                                        .onChange(of: s.joinCode) { val in
-                                            s.parseJoinCode(val)
-                                        }
-                                }
-
-                                let clean = s.joinCode.trimmingCharacters(in: .whitespaces).uppercased()
-                                if !clean.isEmpty {
-                                    HStack(spacing: 8) {
-                                        Label(s.mode == 1 ? "Story Mode" : "Sandbox", systemImage: "gamecontroller")
-                                            .font(.caption.bold())
-                                            .foregroundStyle(s.mode == 1 ? .orange : .cyan)
-                                        Text("•")
-                                        Label(s.pvp ? "PvP On" : "Peaceful Co-op", systemImage: s.pvp ? "burst.fill" : "shield.fill")
-                                            .font(.caption.bold())
-                                            .foregroundStyle(s.pvp ? .red : .green)
-                                        Spacer()
-                                        Text("Auto-synced")
-                                            .font(.caption2)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    .padding(8)
-                                    .background(Color.green.opacity(0.12))
-                                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                                } else {
-                                    Text("Game mode (Story / Sandbox) and PvP rules auto-sync to the host's room code.")
-                                        .font(.caption2).foregroundStyle(.secondary)
-                                }
-
-                                HStack {
-                                    Image(systemName: "lock.fill").foregroundStyle(.secondary)
-                                    TextField("Room password (if the host set one)", text: $s.roomPass)
-                                        .textInputAutocapitalization(.never)
-                                        .autocorrectionDisabled()
-                                }
-
-                                Text("Note: PvP damage rules and game mode follow the host completely, you can't change them yourself.")
-                                    .font(.caption2).foregroundStyle(.orange)
-                            }
-                        } else if s.roomMode == "public" {
-                            VStack(alignment: .leading, spacing: 10) {
-                                Picker("Public region", selection: $s.mode) {
-                                    Text("Story Mode Public").tag(1)
-                                    Text("Sandbox Public").tag(2)
-                                }
-                                .pickerStyle(.segmented)
-
-                                HStack {
-                                    Image(systemName: "globe.americas.fill").foregroundStyle(.green)
-                                    Text("Public shared lobby (Supports 32 / 64 players per room)")
-                                        .fontWeight(.medium)
-                                }
-                                Text("Auto-connects to the shared lobby with players online on the AWS iOSVN server. Peaceful mode is on by default.")
-                                    .font(.caption).foregroundStyle(.secondary)
-                            }
-                        } else {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Picker("LAN Mode", selection: $s.mode) {
-                                    Text("Story Mode").tag(1)
-                                    Text("Sandbox").tag(2)
-                                }
-                                .pickerStyle(.segmented)
-                                Text("Host a room on Wi-Fi (Up to \(s.maxPlayers) players): Connect via: \(localIPs().joined(separator: " or "))")
-                                    .font(.callout).textSelection(.enabled)
-                            }
-                        }
-
-                        DisclosureGroup("Server (Advanced)") {
-                            HStack {
-                                Text("Server IP:")
-                                TextField("18.143.103.253", text: $s.server)
-                                    .keyboardType(.numbersAndPunctuation)
-                                    .autocorrectionDisabled()
-                                    .textInputAutocapitalization(.never)
-                            }
-                            HStack {
-                                Circle().fill(Color.green).frame(width: 8, height: 8)
-                                Text("AWS iOSVN Singapore server (Ping ~40ms, Supports 32 / 64 players)")
-                                    .font(.caption2).foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                }
-
-                if !s.multiplayer {
-                    Section("GTA V Cheat Codes (Offline only)") {
-                        Button(action: { showingCheatSheet = true }) {
-                            Label("View & Activate Cheat Codes", systemImage: "wand.and.stars")
-                        }
-                        Text("Quickly look up and activate cheat codes (invincibility, full weapons, helicopter, race cars...). Cheat codes are auto-locked in Online mode.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-
-                if !s.multiplayer {
-                    Section("Sandbox Vehicles") {
-                        Toggle("Auto-spawn vehicle in Sandbox", isOn: $s.sandboxAutoSpawn)
-                            .onChange(of: s.sandboxAutoSpawn) { _ in try? s.save() }
-                        Text("When on, every Sandbox session starts you inside the first vehicle below. Turn it off if the spawn ever causes trouble — the CAR button and the in-game menu still work.")
-                            .font(.caption).foregroundStyle(.secondary)
-                        ForEach(s.sandboxVehicles, id: \.self) { code in
-                            HStack {
-                                Text(code).font(.body.monospaced())
-                                Spacer()
-                                if code == s.sandboxVehicles.first {
-                                    Text("starter").font(.caption).foregroundStyle(.secondary)
-                                }
-                            }
-                        }
-                        .onDelete { idx in
-                            s.sandboxVehicles.remove(atOffsets: idx)
-                            try? s.save()
-                        }
-                        HStack {
-                            TextField("Add a vehicle code (e.g. loweyezv)", text: $newVehicleCode)
-                                .textInputAutocapitalization(.never)
-                                .autocorrectionDisabled()
-                            Button("Add") {
-                                let c = newVehicleCode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                                guard !c.isEmpty, !s.sandboxVehicles.contains(c) else { return }
-                                s.sandboxVehicles.append(c)
-                                newVehicleCode = ""
-                                try? s.save()
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .disabled(newVehicleCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        }
-                    }
-                }
-
-                Section("Save Data") {
-                    Button("Share / Backup saves") { shareSaves() }
-                    Text("In game: save via Phone > Quick Save, or Pause > Game > Save Game. Saves are stored in Files app > On My iPhone > GTA V > saves.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                Section("Diagnostics") {
-                    Button("Share startup / memory logs") { shareDiagnostics() }
-                    Text("After a crash, reopen GTA V and share the previous log. Logs contain connection addresses and runtime errors, not game files.")
-                        .font(.caption).foregroundStyle(.secondary)
+                if showingSettings {
+                    CLSettingsPanel(screenWidth: geo.size.width, s: s, showingCheatSheet: $showingCheatSheet, showingHUDEditor: $showingHUDEditor, showingResetAlert: $showingResetAlert, resetAlertMessage: $resetAlertMessage, newVehicleCode: $newVehicleCode, onClose: { showingSettings = false })
+                        .transition(.opacity)
+                        .zIndex(20)
                 }
             }
-            .frame(maxWidth: .infinity)
         }
         .preferredColorScheme(.dark)
+        .animation(.spring(response: 0.38, dampingFraction: 0.9), value: showingSettings)
         .sheet(isPresented: $picking) {
             DocumentPicker(isPresented: $picking, onPick: { url in
                 importer.run(url)
@@ -1713,6 +1941,162 @@ struct LauncherView: View {
         } message: {
             Text(resetAlertMessage)
         }
+    }
+
+    private var headerRow: some View {
+        HStack {
+            Text("GTA V")
+                .font(.system(size: 19, weight: .semibold))
+                .foregroundColor(.white)
+            Spacer()
+            Button { showingSettings = true } label: {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 19, weight: .light))
+                    .frame(width: 42, height: 42)
+                    .foregroundColor(.white)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 24)
+        .padding(.top, 10)
+    }
+
+    private var hero: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ZStack {
+                LinearGradient(colors: [Color(hex: "1F7A33"), Color(hex: "0B1E12")],
+                               startPoint: .topLeading, endPoint: .bottomTrailing)
+                // Large light "V" behind the image, so the tile still looks
+                // right if the AppIcon asset does not resolve.
+                Text("V")
+                    .font(.system(size: 64, weight: .light))
+                    .foregroundColor(.white.opacity(0.85))
+                Image("AppIcon")
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            }
+            .frame(width: 110, height: 110)
+            .clipShape(RoundedRectangle(cornerRadius: 18))
+            .shadow(color: .black.opacity(0.45), radius: 12, y: 5)
+            Text(isOverlay ? "GTA V Menu" : "GTA V")
+                .font(.system(size: 36, weight: .light))
+                .foregroundColor(.white)
+                .padding(.top, 12)
+            Text(statusLine)
+                .font(.system(size: 16))
+                .foregroundColor(.white.opacity(0.62))
+                .padding(.top, 2)
+            actionArea
+                .padding(.top, 14)
+        }
+    }
+
+    @ViewBuilder private var actionArea: some View {
+        if !muguet_has_game_code() {
+            Text("This build has no game code: build it with ./make-ios.sh <game.zip>.")
+                .foregroundStyle(.red).font(.callout).multilineTextAlignment(.center)
+        } else if !importer.ready || importer.progress != nil {
+            importView
+        } else if isOverlay {
+            Button(action: resumeAndSave) {
+                HStack(spacing: 10) {
+                    Image(systemName: "play.fill").font(.system(size: 13))
+                    Text("Continue").font(.system(size: 17, weight: .semibold))
+                }
+                .padding(.horizontal, 34).padding(.vertical, 13)
+                .background(Capsule().fill(Color.white))
+                .foregroundColor(Color(hex: "0B0D12"))
+                .shadow(color: .black.opacity(0.45), radius: 12, y: 5)
+            }
+            .buttonStyle(.plain)
+            Button(action: { suspendApp() }) {
+                Text("Quit the app")
+                    .font(.system(size: 15, weight: .semibold))
+                    .padding(.horizontal, 26).padding(.vertical, 11)
+                    .background(Capsule().stroke(Color.red.opacity(0.6), lineWidth: 1))
+                    .foregroundColor(.red)
+            }
+            .buttonStyle(.plain)
+        } else {
+            if let error { Text(error).foregroundStyle(.red).font(.callout).multilineTextAlignment(.center) }
+            playButton
+            Button("Import other game data…") { picking = true }
+                .font(.caption)
+                .foregroundColor(.white.opacity(0.6))
+        }
+    }
+
+    private var modeRail: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(alignment: .bottom, spacing: 12) {
+                modeTile(title: "Story", icon: "gamecontroller", index: 0)
+                modeTile(title: "Sandbox", icon: "map", index: 1)
+                modeTile(title: "Online", icon: "globe", index: 2)
+            }
+        }
+    }
+
+    private func modeTile(title: String, icon: String, index: Int) -> some View {
+        let focused = selectedMode == index
+        let size: CGFloat = focused ? 128 : 100
+        return Button { selectMode(index) } label: {
+            ZStack {
+                LinearGradient(colors: [Color(hex: "1F7A33"), Color(hex: "0B1E12")],
+                               startPoint: .topLeading, endPoint: .bottomTrailing)
+                VStack(spacing: 6) {
+                    Image(systemName: icon)
+                        .font(.system(size: 30, weight: .light))
+                    Text(title)
+                        .font(.system(size: 11, weight: .medium))
+                }
+                .foregroundColor(.white.opacity(0.9))
+            }
+            .frame(width: size, height: size)
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(focused ? Color.white : .clear, lineWidth: 3)
+                    .padding(2)
+            )
+            .shadow(color: .black.opacity(focused ? 0.6 : 0.42), radius: focused ? 16 : 7, y: 4)
+        }
+        .buttonStyle(.plain)
+        .animation(.spring(response: 0.4, dampingFraction: 0.85), value: focused)
+    }
+
+    private var presetChips: some View {
+        CLPresetButtons(s: s, resetAlertMessage: $resetAlertMessage, showingResetAlert: $showingResetAlert)
+    }
+
+    private var quickRows: some View {
+        VStack(spacing: 6) {
+            HStack(spacing: 12) {
+                Text("Game data").font(.system(size: 15, weight: .medium)).foregroundColor(.white)
+                Spacer()
+                if importer.ready {
+                    Text("Ready").font(.system(size: 14)).foregroundColor(Color(hex: "7EE787"))
+                } else {
+                    Button("Import") { picking = true }
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(Color(hex: "0B0D12"))
+                        .padding(.horizontal, 16).padding(.vertical, 8)
+                        .background(Capsule().fill(Color.white))
+                        .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 12).padding(.vertical, 10)
+            .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.05)))
+            CLRow(title: "Player", value: s.name) { showingSettings = true }
+            CLRow(title: "Diagnostics", value: "Share logs") { shareDiagnostics() }
+        }
+    }
+
+    private var footer: some View {
+        VStack(spacing: 2) {
+            Text("proudly made by c22dev").font(.system(size: 12)).foregroundColor(.white.opacity(0.55))
+            Text("Rebuild: iOSVN").font(.system(size: 12)).foregroundColor(.white.opacity(0.55))
+        }
+        .frame(maxWidth: .infinity)
     }
 
     @ViewBuilder var importView: some View {
@@ -1759,19 +2143,17 @@ struct LauncherView: View {
     }
 
     @ViewBuilder var playButton: some View {
-        let button = Button(action: start) {
-            Text("Play").font(.title3.weight(.semibold)).frame(maxWidth: 220)
+        Button(action: start) {
+            HStack(spacing: 10) {
+                Image(systemName: "play.fill").font(.system(size: 13))
+                Text("Play").font(.system(size: 17, weight: .semibold))
+            }
+            .padding(.horizontal, 34).padding(.vertical, 13)
+            .background(Capsule().fill(Color.white))
+            .foregroundColor(Color(hex: "0B0D12"))
+            .shadow(color: .black.opacity(0.45), radius: 12, y: 5)
         }
-        .controlSize(.large)
-        #if compiler(>=6.2)
-        if #available(iOS 26.0, *) {
-            button.buttonStyle(.glassProminent)
-        } else {
-            button.buttonStyle(.borderedProminent)
-        }
-        #else
-        button.buttonStyle(.borderedProminent)
-        #endif
+        .buttonStyle(.plain)
     }
 
     func resumeAndSave() {
