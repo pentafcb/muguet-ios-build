@@ -393,7 +393,7 @@ pub fn install(window: &Window) {
         TopRight(dx, dy) => (sx + sw - dx * b_scale, sy + dy * b_scale),
         Nav(dx, dy) => (sx + sw / 2.0 + dx * nav_scale(sw), sy + 90.0 * b_scale + dy),
     };
-    let buttons = BUTTONS
+    let buttons: Vec<Btn> = BUTTONS
         .iter()
         .enumerate()
         .map(|(i, s)| {
