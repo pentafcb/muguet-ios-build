@@ -2153,12 +2153,18 @@ struct LauncherView: View {
                         .blur(radius: 110)
                         .offset(x: geo.size.width * 0.5 - 280, y: -190)
                 } else {
-                    // Los Santos panorama, full-bleed and centered: on a portrait
-                    // phone scaledToFill crops the sides, the downtown skyline
-                    // in the center stays visible.
+                    // GTA V logo wallpaper, zoomed and dead-center: the
+                    // logo is small in the 600x400 image, so plain fill
+                    // left it small and lost behind the UI. The explicit
+                    // geo-sized frame centers it on the screen and the
+                    // 1.8x zoom makes the V big enough to read around
+                    // the mode rail and chips.
                     Image("BackgroundLosSantos")
                         .resizable()
                         .aspectRatio(contentMode: .fill)
+                        .scaleEffect(1.8)
+                        .frame(width: geo.size.width, height: geo.size.height)
+                        .clipped()
                         .ignoresSafeArea()
                     // Dark gradient overlay so the white header text, PLAY
                     // button, mode rail, quick rows and credits stay readable.
