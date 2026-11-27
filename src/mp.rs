@@ -446,6 +446,9 @@ pub fn key_pressed(code: &str) {
     }
 }
 
+// Called only from touch.rs, which is iOS-only, so the host build
+// sees this as dead code.
+#[allow(dead_code)]
 pub fn network_status() -> Option<String> {
     if std::env::var("MUGUET_HOST").is_err() && std::env::var("MUGUET_SERVER").is_err() { return None; }
     let net = match *NET.lock().unwrap_or_else(|e| e.into_inner()) {
@@ -2358,6 +2361,9 @@ pub fn request_spawn_vehicle(model: String) {
 // starter) without opening the menu. The toggle only disables the
 // automatic spawn at session start, so this still works with
 // auto-spawn off; an empty list means nothing to spawn.
+// Called only from touch.rs, which is iOS-only, so the host build
+// sees this as dead code.
+#[allow(dead_code)]
 pub fn request_spawn_first_vehicle() {
     let first = std::env::var("MUGUET_SANDBOX_VEHICLES").ok()
         .and_then(|v| v.split(',').map(|s| s.trim().to_string()).find(|s| !s.is_empty()));

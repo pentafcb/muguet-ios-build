@@ -218,6 +218,9 @@ impl ApplicationHandler for App {
             #[cfg(target_os = "ios")]
             if self.startup_since.is_some() { crate::touch::loading(Some(&self.startup_stage)); }
         }
+        // `message` is only used inside the cfg(ios) format string below,
+        // so the host build sees it as unused.
+        #[allow(unused_variables)]
         if let Some(message) = ENGINE_ERROR.lock().unwrap_or_else(|e| e.into_inner()).take() {
             self.startup_since = None;
             // A terminal error always wins over a memory pause: clear

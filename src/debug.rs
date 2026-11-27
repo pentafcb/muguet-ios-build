@@ -87,6 +87,9 @@ pub fn set_ram_tracker(text: String, tier: u8) {
     }
 }
 
+// Read only from touch.rs, which is iOS-only, so the host build
+// sees this as dead code.
+#[allow(dead_code)]
 pub fn ram_tracker() -> (String, u8) {
     RAM_TRACKER.lock().map(|slot| slot.clone()).unwrap_or_else(|e| e.into_inner().clone())
 }
@@ -139,10 +142,6 @@ pub fn init() {
     }
 }
 
-pub fn run_number() -> u64 {
-    lock_state().run
-}
-
 fn write_debug_log(msg: &str) {
     if !enabled() {
         return;
@@ -185,7 +184,10 @@ pub extern "C" fn muguet_debug_log(msg: *const std::ffi::c_char) {
 
 fn sample_inner(footprint_mb: u64, available_mb: u64, heap_mb: u64, gpu: Option<GpuSample>, forced: bool) {
     let mut warn: Option<String> = None;
-    let mut line: Option<String> = None;
+    // No initializer: the value is assigned on every path that reaches
+    // the log below (the only other path returns early), so an initial
+    // None would be overwritten before ever being read.
+    let line: Option<String>;
     // persist_json does file I/O (write + create_dir_all) and used to
     // run while holding STATE, stalling snapshot_text() (panic hook,
     // memory warning) on every new texture peak while streaming.

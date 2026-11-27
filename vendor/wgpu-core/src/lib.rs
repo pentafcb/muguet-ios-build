@@ -39,6 +39,11 @@
     clippy::pattern_type_mismatch,
     // `wgpu-core` isn't entirely user-facing, so it's useful to document internal items.
     rustdoc::private_intra_doc_links,
+    // Vendored: TextureStateSet::clear is unused under our feature set,
+    // and lock/ranked.rs carries an expect(unused) the current compiler
+    // no longer fulfils. Allow both here instead of editing vendored code.
+    dead_code,
+    unfulfilled_lint_expectations,
 )]
 #![expect(missing_debug_implementations, reason = "TODO")]
 #![warn(

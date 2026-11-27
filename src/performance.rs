@@ -12,6 +12,9 @@ pub fn set_promotion_sync(enabled: bool) {
     PROMOTION_SYNC.store(enabled, Ordering::Relaxed);
 }
 
+// Called only from a cfg(ios) site in gpu.rs, so the host build
+// sees this as dead code.
+#[allow(dead_code)]
 pub fn promotion_sync_enabled() -> bool {
     PROMOTION_SYNC.load(Ordering::Relaxed)
 }

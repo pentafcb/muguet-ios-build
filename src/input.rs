@@ -96,6 +96,9 @@ pub fn set_locked(locked: bool) {
     }
 }
 
+// Called only from touch.rs, which is iOS-only, so the host build
+// sees this as dead code.
+#[allow(dead_code)]
 pub fn set_menu_touch(enabled: bool) {
     if MENU_TOUCH.swap(enabled, Ordering::Relaxed) == enabled { return; }
     // Prevent a look delta / old click from leaking across menu transitions.

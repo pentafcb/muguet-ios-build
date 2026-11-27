@@ -2,7 +2,11 @@
 // Constantin Clerc (c22dev) - 0.1
 
 mod app;
+// aim and touch_gestures are used only from touch.rs, which is iOS-only,
+// so the host build sees them as dead code.
+#[allow(dead_code)]
 mod aim;
+#[allow(dead_code)]
 mod touch_gestures;
 mod audio;
 mod config;

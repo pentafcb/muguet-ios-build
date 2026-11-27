@@ -67,10 +67,6 @@ fn build_dir(root: &Path) -> Option<PathBuf> {
     builds.into_iter().next_back()
 }
 
-pub fn validate_game_files() -> anyhow::Result<()> {
-    validate_game_files_with_progress(|_, _| {})
-}
-
 pub fn validate_game_files_with_progress(progress: impl FnMut(usize, usize)) -> anyhow::Result<()> {
     use anyhow::Context;
     let root = game_dir();
