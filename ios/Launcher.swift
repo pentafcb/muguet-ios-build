@@ -4,6 +4,7 @@
 import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
+import Combine
 
 let configURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
     .appendingPathComponent("config.json")
@@ -360,6 +361,10 @@ func muguet_apply_cheat(_ code: UnsafePointer<CChar>)
 
 @_silgen_name("muguet_spawn_vehicle")
 func muguet_spawn_vehicle(_ code: UnsafePointer<CChar>)
+@_silgen_name("muguet_console_tail")
+func muguet_console_tail() -> UnsafePointer<CChar>?
+@_silgen_name("muguet_console_command")
+func muguet_console_command(_ code: UnsafePointer<CChar>)
 @_silgen_name("muguet_is_multiplayer")
 func muguet_is_multiplayer() -> Bool
 @_silgen_name("muguet_toggle_first_person")
@@ -2324,6 +2329,101 @@ public func muguetOpenMenu() {
         }))
 
         presenter.present(alert, animated: true)
+    }
+}
+
+// FiveM-style in-game console (F8): a dark panel over the top ~55%
+// of the screen with the latest log lines and an input row. It polls
+// muguet_console_tail() while open. Commands: spawn <code>, help,
+// clear, close.
+struct ConsoleView: View {
+    @State private var logText = ""
+    @State private var input = ""
+    @State private var pollTick = Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()
+    var onClose: () -> Void
+
+    var body: some View {
+        ZStack(alignment: .top) {
+            Color.clear
+            VStack(spacing: 0) {
+                HStack {
+                    Text("Console").font(.headline)
+                    Spacer()
+                    Button("Open log") { shareDiagnostics() }
+                        .font(.subheadline)
+                    Button("Close") { onClose() }
+                        .font(.subheadline.weight(.semibold))
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(Color.black.opacity(0.85))
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        Text(logText.isEmpty ? "Console ready — type help for commands." : logText)
+                            .font(.system(.caption, design: .monospaced))
+                            .foregroundColor(.white.opacity(0.9))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .id("bottom")
+                            .onChange(of: logText) { _ in
+                                proxy.scrollTo("bottom", anchor: .bottom)
+                            }
+                    }
+                    .background(Color.black.opacity(0.85))
+                }
+                HStack(spacing: 8) {
+                    Text(">").font(.system(.body, design: .monospaced)).foregroundColor(.white)
+                    TextField("Type a command (help for list)", text: $input)
+                        .font(.system(.body, design: .monospaced))
+                        .foregroundColor(.white)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                        .onSubmit { submit() }
+                    Button("Send") { submit() }
+                        .font(.subheadline.weight(.semibold))
+                }
+                .padding(10)
+                .background(Color.black.opacity(0.9))
+            }
+            .frame(height: UIScreen.main.bounds.height * 0.55, alignment: .top)
+        }
+        .ignoresSafeArea()
+        .onReceive(pollTick) { _ in poll() }
+        .onAppear { poll() }
+    }
+
+    func poll() {
+        guard let ptr = muguet_console_tail() else { return }
+        let text = String(cString: ptr)
+        if text != logText { logText = text }
+    }
+
+    func submit() {
+        let cmd = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cmd.isEmpty else { return }
+        input = ""
+        cmd.withCString { muguet_console_command($0) }
+        if cmd == "close" { onClose(); return }
+        poll()
+    }
+}
+
+@_cdecl("muguet_show_console")
+public func muguetShowConsole() {
+    DispatchQueue.main.async {
+        guard let root = foregroundRootViewController() else { return }
+        var presenter = root
+        while let child = presenter.presentedViewController { presenter = child }
+        // Do not stack consoles if the button is tapped twice.
+        if presenter is UIHostingController<ConsoleView> { return }
+        weak var host: UIHostingController<ConsoleView>?
+        let view = ConsoleView(onClose: { host?.dismiss(animated: true) })
+        let hc = UIHostingController(rootView: view)
+        host = hc
+        hc.modalPresentationStyle = .overFullScreen
+        hc.view.backgroundColor = .clear
+        presenter.present(hc, animated: true)
     }
 }
 

@@ -1172,6 +1172,12 @@ pub fn script_tick(caller: &mut Caller<'_, HostState>, thread: u64, tls: u64) ->
             game.starter_done = false;
             game.starter_since = None;
             game.pending_spawn = None;
+            // Session start: log the mode (the auto-spawn starter only
+            // runs in Sandbox) and the configured starter, so the
+            // console shows why the truck did or did not appear.
+            crate::debug::console_line(&format!("[mp] session start: mode={} starter={}",
+                std::env::var("MUGUET_MODE").unwrap_or_else(|_| "?".into()),
+                std::env::var("MUGUET_SANDBOX_VEHICLE").unwrap_or_else(|_| "?".into())));
             // Taken keys are (owner, key): the old owner is gone, and
             // a stale key permanently blocks mirroring a later car
             // that reuses the same entity handle.
@@ -2387,23 +2393,91 @@ pub extern "C" fn muguet_spawn_vehicle(code: *const std::ffi::c_char) {
     }
 }
 
+// In-game console commands, called from Swift (ConsoleView). The
+// command itself is echoed into the buffer with a "> " prefix, like
+// the FiveM console. "close" is handled on the Swift side (dismiss);
+// Rust ignores it.
+#[no_mangle]
+pub extern "C" fn muguet_console_command(code: *const std::ffi::c_char) {
+    if code.is_null() { return; }
+    let raw = unsafe { std::ffi::CStr::from_ptr(code) }.to_string_lossy();
+    crate::debug::console_line(&format!("> {}", raw.trim()));
+    let mut parts = raw.trim().split_whitespace();
+    let Some(cmd) = parts.next() else { return; };
+    match cmd {
+        "spawn" => {
+            let Some(model) = parts.next() else {
+                crate::debug::console_line("usage: spawn <vehicle code>  (e.g. spawn loweyezv)");
+                return;
+            };
+            let model = model.to_lowercase();
+            crate::debug::console_line(&format!("spawn {model} requested"));
+            request_spawn_vehicle(model);
+        }
+        "help" => {
+            crate::debug::console_line("commands: spawn <code> — spawn a vehicle | clear — clear the console | close — close the console");
+        }
+        "clear" => crate::debug::clear_console(),
+        "close" => {}
+        _ => crate::debug::console_line(&format!("unknown command: {cmd} (try: help)")),
+    }
+}
+
+// Throttle for the "still waiting" spawn diagnostics: one line per
+// 5 s per model, so a 30 s wait produces ~6 lines, not hundreds.
+static SPAWN_WAIT_LOG: Mutex<(String, Option<Instant>)> = Mutex::new((String::new(), None));
+
 fn poll_spawn_request(c: &mut Cmd, game: &mut Game) {
     if game.pending_spawn.is_none() {
         if let Ok(mut slot) = SPAWN_REQUEST.lock() {
             if let Some(model) = slot.take() {
+                crate::debug::console_line(&format!("[mp] spawn request picked up: {model}"));
+                if let Ok(mut w) = SPAWN_WAIT_LOG.lock() { *w = (model.clone(), None); }
                 game.pending_spawn = Some((model, Instant::now()));
             }
         }
     }
     let Some((model_name, since)) = game.pending_spawn.clone() else { return; };
     if since.elapsed() > Duration::from_secs(30) {
+        crate::debug::console_line(&format!("[mp] spawn request: {model_name} never loaded after 30 s (DLC not mounted / mod not installed?)"));
         eprintln!("[mp] spawn request: model {model_name} never loaded; giving up");
         game.pending_spawn = None;
         return;
     }
     if try_spawn_vehicle(c, proto::joaat(&model_name)) {
+        crate::debug::console_line(&format!("[mp] spawn request: spawned {model_name}"));
         eprintln!("[mp] spawn request: spawned {model_name}");
         game.pending_spawn = None;
+        return;
+    }
+    // Still waiting: say which stage is stuck, at most one line per
+    // 5 s. The usual causes are no player ped yet (request before the
+    // world exists) and the model never loading (DLC not mounted).
+    spawn_wait_log(c, &model_name, since);
+}
+
+// Which stage a pending spawn is stuck at. model_ready re-sends
+// RequestModel when the model is not loaded yet, so calling it here
+// is the same probe try_spawn_vehicle already does each tick.
+fn spawn_wait_log(c: &mut Cmd, model_name: &str, since: Instant) {
+    let elapsed = since.elapsed().as_secs();
+    if elapsed < 5 { return; }
+    {
+        let mut w = SPAWN_WAIT_LOG.lock().unwrap_or_else(|e| e.into_inner());
+        if w.0 != model_name {
+            *w = (model_name.to_string(), None);
+        } else if let Some(last) = w.1 {
+            if last.elapsed() < Duration::from_secs(5) { return; }
+        }
+        w.1 = Some(Instant::now());
+    }
+    let ped = c.i("PlayerPedId", &[]);
+    if ped == 0 || !c.exists(ped) {
+        crate::debug::console_line(&format!("[mp] spawn {model_name}: waiting for player ped ({elapsed}s)"));
+    } else if !model_ready(c, proto::joaat(model_name)) {
+        crate::debug::console_line(&format!("[mp] spawn {model_name}: HasModelLoaded still false after {elapsed}s — model/DLC not loading"));
+    } else {
+        crate::debug::console_line(&format!("[mp] spawn {model_name}: model loaded but CreateVehicle failed ({elapsed}s)"));
     }
 }
 
@@ -2446,20 +2520,30 @@ fn sandbox_starter_vehicle(c: &mut Cmd, game: &mut Game) {
         game.starter_done = true;
         return;
     }
-    let since = *game.starter_since.get_or_insert_with(Instant::now);
+    // Log once, when the gates pass and the 30 s clock starts: if the
+    // console shows the session line but never this line, the starter
+    // never got past its gates (wrong mode / auto-spawn off).
+    if game.starter_since.is_none() {
+        crate::debug::console_line(&format!("[mp] sandbox starter: waiting for model {model_name}"));
+        game.starter_since = Some(Instant::now());
+    }
+    let since = game.starter_since.unwrap();
     if since.elapsed() > Duration::from_secs(30) {
         game.starter_done = true;
+        crate::debug::console_line(&format!("[mp] sandbox starter vehicle: model {model_name} never loaded after 30 s (DLC not mounted / mod not installed?)"));
         eprintln!("[mp] sandbox starter vehicle: model {model_name} never loaded (mod not installed?); giving up");
         return;
     }
     let ped = c.i("PlayerPedId", &[]);
     if ped == 0 || !c.exists(ped) { return; }
     if c.i("IsPedInAnyVehicle", &[i(ped), b(false)]) != 0 {
+        crate::debug::console_line(&format!("[mp] sandbox starter: already in a vehicle, skipping {model_name}"));
         game.starter_done = true;
         return;
     }
     if try_spawn_vehicle(c, proto::joaat(&model_name)) {
         game.starter_done = true;
+        crate::debug::console_line(&format!("[mp] sandbox starter vehicle spawned: {model_name}"));
         eprintln!("[mp] sandbox starter vehicle spawned: {model_name}");
     }
 }

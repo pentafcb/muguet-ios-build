@@ -10,6 +10,7 @@
 // always name the run number. In-memory counters are always tracked so a
 // memory warning or panic can still report live GPU counts.
 
+use std::collections::VecDeque;
 use std::sync::{LazyLock, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -94,6 +95,48 @@ pub fn ram_tracker() -> (String, u8) {
     RAM_TRACKER.lock().map(|slot| slot.clone()).unwrap_or_else(|e| e.into_inner().clone())
 }
 
+// In-game console ring buffer: always on, never gated by
+// MUGUET_DEBUG. The user needs to see why a spawn failed or why the
+// game black-screened without a debug flag or a log export. Cap 300
+// lines; Swift polls the last 200 through muguet_console_tail.
+static CONSOLE_LINES: LazyLock<Mutex<VecDeque<String>>> = LazyLock::new(|| Mutex::new(VecDeque::new()));
+const CONSOLE_CAP: usize = 300;
+
+pub fn console_line(msg: &str) {
+    if let Ok(mut buf) = CONSOLE_LINES.lock() {
+        for line in msg.split('\n') {
+            if buf.len() >= CONSOLE_CAP { buf.pop_front(); }
+            buf.push_back(line.to_string());
+        }
+    }
+    eprintln!("{msg}");
+}
+
+pub fn clear_console() {
+    if let Ok(mut buf) = CONSOLE_LINES.lock() { buf.clear(); }
+}
+
+pub fn console_tail() -> String {
+    let buf = CONSOLE_LINES.lock().unwrap_or_else(|e| e.into_inner());
+    let skip = buf.len().saturating_sub(200);
+    buf.iter().skip(skip).cloned().collect::<Vec<_>>().join("\n")
+}
+
+// The latest tail as a C string for Swift. The pointer stays valid
+// until the next call replaces the stored string; Swift copies it
+// immediately.
+static CONSOLE_TAIL_C: LazyLock<Mutex<std::ffi::CString>> = LazyLock::new(|| Mutex::new(std::ffi::CString::new("").unwrap()));
+#[no_mangle]
+pub extern "C" fn muguet_console_tail() -> *const std::ffi::c_char {
+    let tail = console_tail();
+    if let Ok(mut slot) = CONSOLE_TAIL_C.lock() {
+        if let Ok(c) = std::ffi::CString::new(tail) { *slot = c; }
+        slot.as_ptr()
+    } else {
+        std::ptr::null()
+    }
+}
+
 fn documents_dir() -> Option<std::path::PathBuf> {
     let home = std::env::var_os("HOME")?;
     let base = std::path::PathBuf::from(home);
@@ -163,10 +206,13 @@ fn write_debug_log(msg: &str) {
 }
 
 pub fn log_line(msg: &str) {
+    // The in-game console shows debug lines too, even when
+    // MUGUET_DEBUG is unset (the file log stays gated). console_line
+    // already echoes to stderr, so there is no second eprintln here.
+    console_line(&format!("[debug] {msg}"));
     if !enabled() {
         return;
     }
-    eprintln!("[debug] {msg}");
     write_debug_log(msg);
 }
 
@@ -178,7 +224,8 @@ pub extern "C" fn muguet_debug_log(msg: *const std::ffi::c_char) {
         return;
     }
     let s = unsafe { std::ffi::CStr::from_ptr(msg) }.to_string_lossy();
-    eprintln!("[debug] {s}");
+    // Same as log_line: the console shows it, the file stays gated.
+    console_line(&format!("[debug] {s}"));
     write_debug_log(&s);
 }
 

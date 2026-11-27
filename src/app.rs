@@ -390,6 +390,17 @@ impl App {
             eprintln!("[host] launch_engine called twice; ignoring the second call");
             return;
         }
+        // DLC mount evidence, first-class console lines: the mod is
+        // installed, so if loweyezv is not listed here or its rpf is
+        // missing, the game never mounts it and the model can never load.
+        let (listed, on_disk, low_listed, low_rpf) = crate::config::dlc_status();
+        if listed.is_empty() && on_disk.is_empty() {
+            crate::debug::console_line("[dlc] no dlcList.xml entries and no dlcPacks on disk (game data missing?)");
+        } else {
+            crate::debug::console_line(&format!("[dlc] dlcList.xml lists {} packs: {}", listed.len(), listed.join(", ")));
+            crate::debug::console_line(&format!("[dlc] on disk: {} packs: {}", on_disk.len(), on_disk.join(", ")));
+            crate::debug::console_line(&format!("[dlc] loweyezv: listed={} dlc.rpf={}", if low_listed { "yes" } else { "NO" }, if low_rpf { "found" } else { "MISSING" }));
+        }
         let Some(window) = self.window.clone() else { return };
         let (w, h) = backbuffer_size(&window);
         input::set_size(w, h);

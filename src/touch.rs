@@ -26,6 +26,7 @@ enum Act {
     Home,
     FirstPerson,
     SpawnCar,
+    Console,
 }
 
 #[derive(Clone, Copy)]
@@ -54,6 +55,12 @@ const fn n(x: f64, label: &'static str, key: &'static str) -> Spec {
 
 use Act::*;
 use Anchor::*;
+// MENU and CONSOLE live on the window view, not the overlay root, so
+// they stay visible (and tappable) while a controller is connected.
+// Their indices are load-bearing: install() reparents these views,
+// relabel() exempts them, and touch_always_visible() hit-tests them.
+const MENU_IDX: usize = 9;
+const CONSOLE_IDX: usize = 25;
 const BUTTONS: &[Spec] = &[
     b(BottomRight(62.0, 68.0), 44.0, Some(("FIRE", Mouse(1))), Some(("GAS", Key("KeyW")))),
     b(BottomRight(158.0, 46.0), 31.0, Some(("AIM", AimToggle)), Some(("BRAKE", Key("KeyS")))),
@@ -80,6 +87,11 @@ const BUTTONS: &[Spec] = &[
     n(78.0, "OK", "Enter"),
     n(130.0, "BACK", "Backspace"),
     n(182.0, "TAB ▶", "KeyE"),
+    // CONSOLE is last on purpose: it sits outside the 17 custom-layout
+    // slots (like CAR) and its index is CONSOLE_IDX above. Top-left
+    // row, right of CAR: on a 390 pt screen x 332-376, y 8-52 — clear
+    // of the RAM label (x 136.5-253.5) and CAR (x 278-322).
+    b(TopLeft(354.0, 30.0), 22.0, Some(("CONSOLE", Console)), Some(("CONSOLE", Console))),
 ];
 
 const STICK_RADIUS: f64 = 58.0;
@@ -353,6 +365,13 @@ pub fn install(window: &Window) {
                 unsafe {
                     let _: () = msg_send![&*old.root, removeFromSuperview];
                     let _: () = msg_send![&*old.ram_label, removeFromSuperview];
+                    // MENU/CONSOLE live on the window view, not the
+                    // root, so removing the root would orphan them.
+                    for &idx in &[MENU_IDX, CONSOLE_IDX] {
+                        if let Some(btn) = old.buttons.get(idx) {
+                            let _: () = msg_send![&*btn.view, removeFromSuperview];
+                        }
+                    }
                 }
             }
         }
@@ -388,6 +407,19 @@ pub fn install(window: &Window) {
             Btn { view, label, center, radius: r }
         })
         .collect();
+    // MENU and CONSOLE stay visible while a controller is connected:
+    // the overlay root hides then, so their views live on the window
+    // view instead (same coordinate space — the root frame is
+    // (0,0,full)), exactly like the RAM label below. apply_layout
+    // keeps working: setCenter/setFrame use the superview's space.
+    for &idx in &[MENU_IDX, CONSOLE_IDX] {
+        if let Some(btn) = buttons.get(idx) {
+            unsafe {
+                let _: () = msg_send![&*btn.view, removeFromSuperview];
+                let _: () = msg_send![view, addSubview: &*btn.view];
+            }
+        }
+    }
     let (j_dx, j_dy, j_scale) = custom_button_layout(16);
     let stick_radius = STICK_RADIUS * b_scale * j_scale;
     let knob_radius = KNOB_RADIUS * b_scale * j_scale;
@@ -500,7 +532,12 @@ impl Overlay {
         for i in 0..self.buttons.len() {
             let act = self.spec_act(i);
             let b = &self.buttons[i];
-            set_hidden(&b.view, act.is_none());
+            // MENU and CONSOLE are exempt: they live on the window view
+            // and must stay visible even when the nav-keys menu is open
+            // or pause is requested (their labels never change, so
+            // there is nothing to re-text when the act is None).
+            let hide = act.is_none() && i != MENU_IDX && i != CONSOLE_IDX;
+            set_hidden(&b.view, hide);
             if let Some((text, _)) = act { set_text(&b.label, text); }
         }
         set_hidden(&self.stick_base, self.direct_touch());
@@ -622,6 +659,13 @@ impl Overlay {
                         Some(SpawnCar) => {
                             crate::mp::request_spawn_first_vehicle();
                         }
+                        Some(Console) => {
+                            #[cfg(target_os = "ios")]
+                            {
+                                extern "C" { fn muguet_show_console(); }
+                                unsafe { muguet_show_console(); }
+                            }
+                        }
                         _ => {}
                     }
                     self.grips.insert(t.id, Grip::Button { idx, act, start: p, last: p, motion: crate::aim::DragLook::new(p) });
@@ -698,6 +742,40 @@ impl Overlay {
             }
         }
         self.apply();
+    }
+
+    // Restricted hit-test for the hidden state: only MENU and CONSOLE
+    // (the two buttons reparented to the window view). Geometry only —
+    // spec_act can be None in nav/pause states, but these buttons stay
+    // visible there, so a tap on them must fire. One-shot actions only;
+    // no grip is recorded, because later phases of the same touch are
+    // still dropped while hidden.
+    fn touch_always_visible(&self, t: &Touch) {
+        let scale = if self.scale.is_finite() && self.scale > 0.0 { self.scale } else { 1.0 };
+        let p = (t.location.x / scale, t.location.y / scale);
+        for &idx in &[MENU_IDX, CONSOLE_IDX] {
+            let Some(b) = self.buttons.get(idx) else { continue };
+            let r = b.radius + 8.0;
+            if (p.0 - b.center.0).powi(2) + (p.1 - b.center.1).powi(2) > r * r { continue; }
+            match idx {
+                MENU_IDX => {
+                    #[cfg(target_os = "ios")]
+                    {
+                        extern "C" { fn muguet_open_menu(); }
+                        unsafe { muguet_open_menu(); }
+                    }
+                }
+                CONSOLE_IDX => {
+                    #[cfg(target_os = "ios")]
+                    {
+                        extern "C" { fn muguet_show_console(); }
+                        unsafe { muguet_show_console(); }
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
     }
 
     fn apply(&mut self) {
@@ -801,7 +879,15 @@ pub fn touch(t: &Touch) {
     OVERLAY.with(|cell| {
         if let Ok(mut guard) = cell.try_borrow_mut() {
             if let Some(o) = guard.as_mut() {
-                if !o.hidden && !o.loading { o.touch(t); }
+                if !o.hidden && !o.loading {
+                    o.touch(t);
+                } else if o.hidden && t.phase == TouchPhase::Started {
+                    // The overlay root is hidden while a controller is
+                    // connected, so the normal entry drops everything.
+                    // MENU and CONSOLE live on the window view and stay
+                    // visible: still let those two fire.
+                    o.touch_always_visible(t);
+                }
             }
         }
     });

@@ -3567,6 +3567,7 @@ impl Gpu {
                     match self.resume_since {
                         Some(since) if now.duration_since(since) >= Duration::from_secs(2) => {
                             log(&format!("memory pause: recovered to tier {tier} (footprint {fp} MB, {avail_mb} MB free); resuming the game"));
+                            crate::debug::console_line(&format!("[memory] paused game resumed: tier {tier}, footprint {fp} MB, {avail_mb} MB free"));
                             MEMORY_PAUSED.store(false, Ordering::Relaxed);
                             SUSPENDED.store(false, Ordering::Relaxed);
                             self.paused_since = None;
@@ -3581,6 +3582,7 @@ impl Gpu {
                     if let Some(since) = self.paused_since {
                         if now.duration_since(since) >= Duration::from_secs(20) {
                             log("memory pause: still critical after 20 s paused; stopping the game cleanly instead of waiting for jetsam");
+                            crate::debug::console_line("[memory] still critical after 20 s paused; stopping the game cleanly instead of waiting for jetsam");
                             MEMORY_PAUSED.store(false, Ordering::Relaxed);
                             self.paused_since = None;
                             self.resume_since = None;
@@ -3682,6 +3684,7 @@ impl Gpu {
                     self.critical_since = None;
                     if !MEMORY_PAUSED.load(Ordering::Relaxed) {
                         log(&format!("memory cleanup: footprint still {after} MB 3 s after purge; pausing the game until memory recovers"));
+                        crate::debug::console_line(&format!("[memory] footprint still {after} MB 3 s after purge; pausing the game until memory recovers"));
                         MEMORY_PAUSED.store(true, Ordering::Relaxed);
                         SUSPENDED.store(true, Ordering::Relaxed);
                         self.paused_since = Some(now);

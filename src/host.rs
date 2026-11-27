@@ -53,10 +53,13 @@ fn eng_print(tag: &str, line: &str) {
         *count += 1;
         *count
     };
+    // The in-game console shows the same deduped engine lines (the
+    // game's own DLC-mount and shader lines flow through here).
+    // console_line echoes to stderr, so it replaces the eprintln!s.
     if n <= 3 {
-        eprintln!("[{tag}] {line}");
+        crate::debug::console_line(&format!("[{tag}] {line}"));
     } else if n % 100 == 0 {
-        eprintln!("[{tag}] (repeated {n}x) {line}");
+        crate::debug::console_line(&format!("[{tag}] (repeated {n}x) {line}"));
     }
 }
 

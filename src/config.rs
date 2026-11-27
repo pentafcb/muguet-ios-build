@@ -41,6 +41,42 @@ pub fn game_dir() -> PathBuf {
     if !dir.join("data").exists() && old.join("data/manifest.json").exists() { old } else { dir }
 }
 
+// DLC mount evidence for the in-game console. The host never mounts
+// DLCs — the game reads dlcList.xml itself — so this is the host-side
+// proof of what SHOULD mount: the packs dlcList.xml lists, the pack
+// folders actually on disk, and whether loweyezv is listed and its
+// dlc.rpf exists. Returns (listed, on_disk, loweyezv_listed, loweyezv_rpf).
+pub fn dlc_status() -> (Vec<String>, Vec<String>, bool, bool) {
+    let data = game_dir().join("data");
+    let listed = std::fs::read_to_string(data.join("common/data/dlcList.xml"))
+        .map(|xml| parse_dlc_list(&xml))
+        .unwrap_or_default();
+    let packs_dir = data.join("x64/dlcPacks");
+    let mut on_disk: Vec<String> = std::fs::read_dir(&packs_dir).map(|rd| {
+        rd.flatten().filter(|e| e.path().is_dir()).filter_map(|e| e.file_name().into_string().ok()).collect()
+    }).unwrap_or_default();
+    on_disk.sort();
+    let loweyezv_listed = listed.iter().any(|n| n.eq_ignore_ascii_case("loweyezv"));
+    let loweyezv_rpf = packs_dir.join("loweyezv/dlc.rpf").is_file();
+    (listed, on_disk, loweyezv_listed, loweyezv_rpf)
+}
+
+// Entries look like <Item>platform:\dlcPacks\<name>\</Item> (the
+// port's format) or dlcpacks:/<name>/ (the mod page's format).
+// Handles both; returns the pack names in file order.
+fn parse_dlc_list(xml: &str) -> Vec<String> {
+    for marker in ["dlcPacks", "dlcpacks"] {
+        let names: Vec<String> = xml.split(marker).skip(1).filter_map(|s| {
+            let s = s.trim_start_matches(['\\', '/', ':']);
+            let name: String = s.chars().take_while(|c| *c != '\\' && *c != '/' && *c != '<' && *c != '"' && *c != '\'').collect();
+            let name = name.trim().to_string();
+            if name.is_empty() { None } else { Some(name) }
+        }).collect();
+        if !names.is_empty() { return names; }
+    }
+    Vec::new()
+}
+
 pub fn game_ready() -> bool {
     let dir = game_dir();
     dir.join("data/manifest.json").exists() && build_dir(&dir).is_some_and(|b| !cfg!(feature = "jit") || crate::code_embedded() || b.join("game.wasm").exists())
@@ -354,6 +390,16 @@ fn settings(cfg_path: &Path) -> Vec<String> {
         deep_optimization,
         ultra_low,
     };
+    // Graphics preset evidence for the in-game console: what the
+    // launcher asked for, so a black screen can be read against the
+    // actual Shadow/Reflection values that were written.
+    crate::debug::console_line(&format!(
+        "[config] graphics: mode={mode_name} fps={fps:.0} scale={} preset={} | shadow={} reflection={} texture={} deep_opt={} ultra_low={}",
+        std::env::var("MUGUET_SCALE").unwrap_or_else(|_| "?".into()),
+        if ultra_low { "Ultra Low" } else if deep_optimization { "Deep optimization" } else { "Custom" },
+        gfx.shadow_quality, gfx.reflection_quality,
+        gfx.texture_quality.map(|q| q.to_string()).unwrap_or_else(|| "auto".into()),
+        deep_optimization, ultra_low));
     fix_settings(gfx);
     engine_args
 }
