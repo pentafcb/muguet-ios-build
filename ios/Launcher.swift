@@ -383,6 +383,15 @@ func muguet_apply_low_ram_preset() -> Bool
 @_silgen_name("muguet_apply_ultra_low_preset")
 func muguet_apply_ultra_low_preset() -> Bool
 
+@_silgen_name("muguet_install_mod")
+func muguet_install_mod(_ path: UnsafePointer<CChar>, _ name: UnsafePointer<CChar>) -> Bool
+@_silgen_name("muguet_remove_mod")
+func muguet_remove_mod(_ name: UnsafePointer<CChar>) -> Bool
+@_silgen_name("muguet_mod_error")
+func muguet_mod_error() -> UnsafePointer<CChar>?
+@_silgen_name("muguet_mod_name")
+func muguet_mod_name() -> UnsafePointer<CChar>?
+
 final class Importer: ObservableObject {
     static let shared = Importer()
     @Published var ready = muguet_game_ready()
@@ -1089,11 +1098,14 @@ struct HUDEditorView: View {
 // surfaced in the launcher instead of disappearing.
 struct DocumentPicker: UIViewControllerRepresentable {
     @Binding var isPresented: Bool
+    // The game import takes .zip only; the Mods section passes
+    // [.zip, .rpf] so a bare dlc.rpf is tappable too.
+    var contentTypes: [UTType] = [UTType.zip]
     var onPick: (URL) -> Void
     var onError: (String) -> Void
 
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
-        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [UTType.zip], asCopy: true)
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: contentTypes, asCopy: true)
         picker.delegate = context.coordinator
         picker.allowsMultipleSelection = false
         return picker
@@ -1350,6 +1362,59 @@ struct CLPresetButtons: View {
 // CloudLauncher's 60%) because this launcher runs on iPhone portrait,
 // #11131B at 0.97 opacity, rounded 18, shadow. Every control from the old
 // Form lives here with the same bindings, actions and alert messages.
+// The 11 packs that ship with the game, lowercased. They are never
+// listed as mods and never offered for removal, here or in Rust.
+private let stockPacks: Set<String> = ["mpbeach", "mpbusiness", "mpbusiness2", "mpchristmas", "mphipster", "mpindependence", "mplts", "mppilot", "mpvalentines", "spupgrade", "verityradio"]
+
+private struct ModEntry: Identifiable {
+    let name: String
+    let size: String
+    var id: String { name }
+}
+
+// Name prompt for a bare dlc.rpf install. The picker copy is named
+// dlc.rpf, so the folder name cannot be derived from the file — the
+// user types it (e.g. loweyezv). Zip installs skip this: Rust takes
+// the name from the zip structure.
+struct ModNameSheet: View {
+    @Binding var name: String
+    var onCancel: () -> Void
+    var onInstall: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Mod name").font(.system(size: 19, weight: .semibold)).foregroundColor(.white)
+            Text("This is the folder name under dlcPacks and the vehicle code you spawn. Use lowercase letters, digits and underscores — e.g. loweyezv.")
+                .font(.system(size: 12)).foregroundColor(.white.opacity(0.55))
+            TextField("Mod name (e.g. loweyezv)", text: $name)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .foregroundColor(.white)
+                .padding(.horizontal, 12).padding(.vertical, 10)
+                .background(RoundedRectangle(cornerRadius: 9).fill(Color.white.opacity(0.08)))
+            HStack(spacing: 10) {
+                Button("Cancel", action: onCancel)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 16).padding(.vertical, 10)
+                    .background(Capsule().fill(Color.white.opacity(0.1)))
+                    .buttonStyle(.plain)
+                Spacer()
+                Button("Install", action: onInstall)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(Color(hex: "0B0D12"))
+                    .padding(.horizontal, 16).padding(.vertical, 10)
+                    .background(Capsule().fill(Color.white))
+                    .buttonStyle(.plain)
+                    .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(22)
+        .background(Color(hex: "11131B"))
+        .preferredColorScheme(.dark)
+    }
+}
+
 struct CLSettingsPanel: View {
     let screenWidth: CGFloat
     @ObservedObject var s: Settings
@@ -1359,6 +1424,17 @@ struct CLSettingsPanel: View {
     @Binding var resetAlertMessage: String
     @Binding var newVehicleCode: String
     var onClose: () -> Void
+
+    // Mods manager state. The installed list is read from disk, never
+    // stored: the folders under dlcPacks are the truth.
+    @State private var installedMods: [ModEntry] = []
+    @State private var pickingMod = false
+    @State private var modNameSheetURL: URL?
+    @State private var showingModNameSheet = false
+    @State private var modNameText = ""
+    @State private var modToDelete: String?
+    @State private var modsStatus = ""
+    @State private var modsWorking = false
 
     var body: some View {
         ZStack(alignment: .trailing) {
@@ -1647,6 +1723,54 @@ struct CLSettingsPanel: View {
                             }
                         }
 
+                        CLSection("Mods") {
+                            Text("Add-on DLC packs (dlc.rpf). Install a mod zip or a bare dlc.rpf and the game will mount it. The game reads the mod list at launch — restart the game after installing or removing a mod.")
+                                .font(.system(size: 12)).foregroundColor(.white.opacity(0.5))
+                            if installedMods.isEmpty {
+                                Text("No add-on mods installed. The 11 built-in packs are not listed here.")
+                                    .font(.system(size: 12)).foregroundColor(.white.opacity(0.5))
+                            } else {
+                                VStack(spacing: 6) {
+                                    ForEach(installedMods) { mod in
+                                        HStack {
+                                            Text(mod.name).font(.body.monospaced()).foregroundColor(.white)
+                                            Spacer()
+                                            if !mod.size.isEmpty {
+                                                Text(mod.size).font(.system(size: 12)).foregroundColor(.white.opacity(0.55))
+                                            }
+                                            Button(action: { modToDelete = mod.name }) {
+                                                Image(systemName: "trash")
+                                                    .font(.system(size: 13))
+                                                    .foregroundColor(.red)
+                                            }
+                                            .buttonStyle(.plain)
+                                        }
+                                        .padding(.horizontal, 12).padding(.vertical, 8)
+                                        .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.05)))
+                                    }
+                                }
+                            }
+                            Button(action: { pickingMod = true }) {
+                                HStack {
+                                    Image(systemName: "plus")
+                                    Text("Add Mod…")
+                                }
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundColor(Color(hex: "0B0D12"))
+                                .padding(.horizontal, 16).padding(.vertical, 10)
+                                .background(Capsule().fill(Color.white))
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(modsWorking)
+                            if modsWorking {
+                                ProgressView().tint(.white)
+                            }
+                            if !modsStatus.isEmpty {
+                                Text(modsStatus).font(.system(size: 12)).foregroundColor(.white.opacity(0.6))
+                            }
+                        }
+                        .onAppear { refreshMods() }
+
                         CLSection("Save Data") {
                             CLRow(title: "Share / Backup saves") { shareSaves() }
                             Text("In game: save via Phone > Quick Save, or Pause > Game > Save Game. Saves are stored in Files app > On My iPhone > GTA V > saves.")
@@ -1673,6 +1797,125 @@ struct CLSettingsPanel: View {
             .transition(.move(edge: .trailing))
         }
         .environment(\.colorScheme, .dark)
+        .sheet(isPresented: $pickingMod) {
+            DocumentPicker(isPresented: $pickingMod, contentTypes: [UTType.zip, UTType(tag: "rpf", tagClass: .filenameExtension, conformingTo: .data) ?? UTType.data], onPick: { url in
+                installModFile(url)
+            }, onError: { message in
+                modsStatus = "Could not pick a file: \(message)"
+                message.withCString { muguet_debug_log($0) }
+            })
+        }
+        .sheet(isPresented: $showingModNameSheet) {
+            if let url = modNameSheetURL {
+                ModNameSheet(name: $modNameText, onCancel: {
+                    showingModNameSheet = false
+                    modNameSheetURL = nil
+                }, onInstall: {
+                    let name = modNameText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                    showingModNameSheet = false
+                    modNameSheetURL = nil
+                    runModInstall(url: url, name: name)
+                })
+            }
+        }
+        .alert("Remove mod?", isPresented: Binding(get: { modToDelete != nil }, set: { if !$0 { modToDelete = nil } })) {
+            Button("Remove", role: .destructive) {
+                if let name = modToDelete { removeMod(name) }
+                modToDelete = nil
+            }
+            Button("Cancel", role: .cancel) { modToDelete = nil }
+        } message: {
+            if let name = modToDelete {
+                Text("This deletes the \(name) folder and its line in dlcList.xml. Other mods are not touched.")
+            }
+        }
+    }
+
+    // Mods manager helpers. The folders under dlcPacks are the source
+    // of truth; the stock packs are filtered out here, and Rust refuses
+    // them again on install/remove.
+    private func modsPacksDir() -> URL {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let game = docs.appendingPathComponent("game")
+        let normal = game.appendingPathComponent("data/x64/dlcPacks")
+        if FileManager.default.fileExists(atPath: normal.path) { return normal }
+        return game.appendingPathComponent("gamedat/data/x64/dlcPacks")
+    }
+
+    private func refreshMods() {
+        let dir = modsPacksDir()
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+        var entries: [ModEntry] = []
+        for name in names.sorted() {
+            if stockPacks.contains(name.lowercased()) { continue }
+            var isDir: ObjCBool = false
+            let full = dir.appendingPathComponent(name)
+            guard FileManager.default.fileExists(atPath: full.path, isDirectory: &isDir), isDir.boolValue else { continue }
+            let rpf = full.appendingPathComponent("dlc.rpf")
+            var sizeText = ""
+            if let attrs = try? FileManager.default.attributesOfItem(atPath: rpf.path), let size = attrs[.size] as? NSNumber {
+                sizeText = ByteCountFormatter.string(fromByteCount: Int64(size.intValue), countStyle: .file)
+            }
+            entries.append(ModEntry(name: name, size: sizeText))
+        }
+        installedMods = entries
+    }
+
+    private func installModFile(_ url: URL) {
+        if url.pathExtension.lowercased() == "rpf" {
+            // A bare dlc.rpf carries no folder name, so ask for it.
+            // A zip skips this: Rust takes the name from the zip.
+            let stem = url.deletingPathExtension().lastPathComponent
+            modNameText = stem.lowercased() == "dlc" ? "" : stem.lowercased()
+            modNameSheetURL = url
+            showingModNameSheet = true
+            return
+        }
+        runModInstall(url: url, name: "")
+    }
+
+    private func runModInstall(url: URL, name: String) {
+        modsWorking = true
+        modsStatus = "Installing…"
+        DispatchQueue.global(qos: .userInitiated).async {
+            let ok = url.path.withCString { path in
+                name.withCString { n in muguet_install_mod(path, n) }
+            }
+            let installed = muguet_mod_name().map { String(cString: $0) } ?? ""
+            let err = muguet_mod_error().map { String(cString: $0) } ?? "Install failed."
+            DispatchQueue.main.async {
+                modsWorking = false
+                if ok, !installed.isEmpty {
+                    modsStatus = "Installed \(installed). Restart the game to use it."
+                    if !s.sandboxVehicles.contains(installed) {
+                        s.sandboxVehicles.append(installed)
+                        try? s.save()
+                    }
+                    refreshMods()
+                } else {
+                    modsStatus = "Install failed: \(err)"
+                }
+            }
+        }
+    }
+
+    private func removeMod(_ name: String) {
+        modsWorking = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            let ok = name.withCString { muguet_remove_mod($0) }
+            let err = muguet_mod_error().map { String(cString: $0) } ?? "Remove failed."
+            DispatchQueue.main.async {
+                modsWorking = false
+                if ok {
+                    modsStatus = "Removed \(name)."
+                    s.sandboxVehicles.removeAll { $0 == name }
+                    try? s.save()
+                    refreshMods()
+                } else {
+                    modsStatus = "Remove failed: \(err)"
+                }
+            }
+        }
     }
 
     private var createForm: some View {
@@ -2099,7 +2342,7 @@ struct LauncherView: View {
     private var footer: some View {
         VStack(spacing: 2) {
             Text("proudly made by c22dev").font(.system(size: 12)).foregroundColor(.white.opacity(0.55))
-            Text("Rebuild: iOSVN").font(.system(size: 12)).foregroundColor(.white.opacity(0.55))
+            Text("Rebuild: Pentacampeon").font(.system(size: 12)).foregroundColor(.white.opacity(0.55))
         }
         .frame(maxWidth: .infinity)
     }

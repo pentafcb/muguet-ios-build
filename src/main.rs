@@ -20,6 +20,10 @@ mod input;
 mod import;
 mod io;
 mod mp;
+// mods is used only from its iOS-only FFI module, so the host build
+// sees it as dead code.
+#[allow(dead_code)]
+mod mods;
 mod pad;
 mod performance;
 #[cfg(feature = "jit")]

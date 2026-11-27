@@ -121,7 +121,7 @@ pub fn import(zip_path: &Path, dest: &Path, keep_code: bool, mut progress: impl 
     Ok(())
 }
 
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     // fs::write truncates then writes: a crash or disk-full mid-write
     // used to leave a truncated dlcList.xml/manifest.json that the game
     // then failed validation on. Write to a temp file and rename.
