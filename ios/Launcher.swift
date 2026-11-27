@@ -23,7 +23,7 @@ final class Settings: ObservableObject {
     @Published var multiplayer = false
     @Published var host = false
     @Published var server = "18.143.103.253"
-    @Published var name = "Player" + String(Int.random(in: 100...999))
+    @Published var name = "Pentacampeon"
     @Published var roomDigits = String(Int.random(in: 1000...9999))
     @Published var joinCode = ""
     @Published var roomPass = ""
@@ -309,7 +309,7 @@ final class Settings: ObservableObject {
         json["stick_offset_x"] = (stickOffsetX * 10).rounded() / 10
         json["stick_offset_y"] = (stickOffsetY * 10).rounded() / 10
         let nm = name.trimmingCharacters(in: .whitespaces)
-        json["player_name"] = nm.isEmpty ? "Player" : nm
+        json["player_name"] = nm.isEmpty ? "Pentacampeon" : nm
         var cbJson: [String: [Double]] = [:]
         for (idx, v) in customButtons {
             cbJson[String(idx)] = v
