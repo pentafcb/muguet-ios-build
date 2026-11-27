@@ -24,7 +24,7 @@
                                 <fontDescription key="fontDescription" type="system" pointSize="14"/>
                                 <color key="textColor" white="0.72" alpha="1" colorSpace="custom" customColorSpace="genericGamma22GrayColorSpace"/>
                             </label>
-                            <label opaque="NO" userInteractionEnabled="NO" contentMode="left" text="Rebuild: iOSVN" textAlignment="center" translatesAutoresizingMaskIntoConstraints="NO" id="launch-rebuild">
+                            <label opaque="NO" userInteractionEnabled="NO" contentMode="left" text="Rebuild: Pentacampeon" textAlignment="center" translatesAutoresizingMaskIntoConstraints="NO" id="launch-rebuild">
                                 <rect key="frame" x="276" y="220" width="300" height="20"/>
                                 <fontDescription key="fontDescription" type="system" pointSize="14"/>
                                 <color key="textColor" red="0.59" green="0.75" blue="0.84" alpha="1" colorSpace="custom" customColorSpace="sRGB"/>

@@ -12,6 +12,9 @@ for a in "$@"; do
   case "$a" in
     *.zip|*.wasm) ZIP="$a" ;;
     --install|--ipa) MODE="$a" ;;
+    # A bare word is a device UDID for --install; an unknown --flag
+    # is a typo, not a device, so fail instead of installing to it.
+    -*) echo "unknown argument: $a"; exit 1 ;;
     *) DEVICE="$a" ;;
   esac
 done
@@ -20,9 +23,10 @@ TEAM="${TEAM:-}"
 if [ "$MODE" != "--ipa" ] && [ -z "$TEAM" ]; then echo "set TEAM=<your Apple developer team id>"; exit 1; fi
 BUNDLE_ID="${BUNDLE_ID:-ch.cclerc.muguet.ios}"
 ENTITLEMENTS=Muguet.entitlements
-if [ "${FREE:-0}" = 1 ] || [ "$MODE" = "--ipa" ]; then
-  ENTITLEMENTS=Muguet-free.entitlements
-fi
+if [ "${FREE:-0}" = 1 ]; then ENTITLEMENTS=Muguet-free.entitlements; fi
+# NOTE: --ipa ignores $ENTITLEMENTS; it ad-hoc signs with
+# ios/Muguet-sideload.entitlements below, so do not set the free file
+# for the --ipa path here.
 # NOTE: there used to be a HEAP_GB / MUGUET_IOS_HEAP_GB knob here (8 paid,
 # 5 free) that no code ever read — the heap cap lives in
 # src/performance.rs (IOS_HEAP_MAX, 3 GB) and the runtime env override
@@ -40,11 +44,16 @@ export PATH="/opt/homebrew/opt/rustup/bin:$PATH"
 export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$HOME=/home --remap-path-prefix=$PWD=/muguet"
 
 if [ -n "$ZIP" ]; then
-  cargo build --locked --release
+  cargo "+$TOOLCHAIN" build --locked --release
   mkdir -p target/ios-game
   case "$ZIP" in
     *.zip)
-      ENTRY="$(unzip -Z1 "$ZIP" | grep -E '(^|/)b/[^/]+/game\.wasm$' | head -1)"
+      # Pin the known build first: taking whatever comes first in zip
+      # order silently embeds the wrong game.wasm if the zip ever
+      # holds more than one b/<build>/game.wasm. Sorted fallback
+      # keeps the choice deterministic when the pin is absent.
+      ENTRY="$(unzip -Z1 "$ZIP" | grep -E '(^|/)b/8b0b5899ed/game\.wasm$' | head -1)"
+      [ -n "$ENTRY" ] || ENTRY="$(unzip -Z1 "$ZIP" | grep -E '(^|/)b/[^/]+/game\.wasm$' | sort | head -1)"
       [ -n "$ENTRY" ] || { echo "$ZIP has no b/<build>/game.wasm"; exit 1; }
       unzip -p "$ZIP" "$ENTRY" > target/ios-game/game.wasm ;;
     *) cp "$ZIP" target/ios-game/game.wasm ;;
@@ -73,6 +82,7 @@ if [ -n "$ZIP" ]; then
     echo "wasm-opt not found (brew install binaryen): building without the extra optimization"
   fi
   ./target/release/muguet --precompile-ios target/ios-game/game.wasm target/ios-game/game.cwasm
+  test -s target/ios-game/game.cwasm || { echo "precompile produced an empty game.cwasm"; exit 1; }
   rm target/ios-game/game.wasm
   export MUGUET_GAME_CODE="$PWD/target/ios-game/game.cwasm"
 else

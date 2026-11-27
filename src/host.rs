@@ -236,6 +236,10 @@ pub fn call(mut caller: Caller<'_, HostState>, idx: usize, params: &[Val], resul
         "wasm_audio_publish_js" => crate::audio::start(int(params, 0) as u64, int(params, 1) as u32),
         "fd_write" if int(params, 0) <= 2 => {
             let (iovs, count) = (int(params, 1) as u64, int(params, 2) as u64);
+            // The count comes straight from the guest: cap it like
+            // fs::iovecs does, or a corrupt count spins this loop
+            // for billions of empty iterations.
+            let count = count.min(1024);
             let mut buf = Vec::new();
             for k in 0..count {
                 let p = read_u64(mem, iovs + k * 16).unwrap_or(0);

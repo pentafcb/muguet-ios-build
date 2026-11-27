@@ -3531,10 +3531,14 @@ impl Gpu {
     // (2.55 GB / 192 MB): deepest purge; if the footprint is still
     // critical 3 s after a purge, stop the game cleanly with a Low
     // memory message instead of being jetsammed with no warning.
-    fn memory_tier(footprint_mb: u64, avail_mb: u64) -> u8 {
-        if footprint_mb >= 2550 || avail_mb < 192 { 3 }
-        else if footprint_mb >= 2300 || avail_mb < 384 { 2 }
-        else if footprint_mb >= 2000 || avail_mb < 768 { 1 }
+    fn memory_tier(footprint_mb: u64, avail_mb: Option<u64>) -> u8 {
+        // avail_mb is None on non-iOS builds (available_memory() only
+        // exists on iOS): an unknown available must not read as 0 MB
+        // free, or the host build sits permanently at tier 3, caps
+        // itself at 30 FPS, and pauses/stops the game after a purge.
+        if footprint_mb >= 2550 || avail_mb.is_some_and(|a| a < 192) { 3 }
+        else if footprint_mb >= 2300 || avail_mb.is_some_and(|a| a < 384) { 2 }
+        else if footprint_mb >= 2000 || avail_mb.is_some_and(|a| a < 768) { 1 }
         else { 0 }
     }
 
@@ -3543,8 +3547,9 @@ impl Gpu {
         if now.duration_since(self.last_memory_check) >= Duration::from_secs(1) {
             self.last_memory_check = now;
             let fp = crate::footprint_mb();
-            let avail_mb = crate::performance::available_memory().unwrap_or(0) >> 20;
-            let tier = Self::memory_tier(fp, avail_mb);
+            let avail = crate::performance::available_memory();
+            let avail_mb = avail.map(|a| a >> 20).unwrap_or(0);
+            let tier = Self::memory_tier(fp, avail.map(|a| a >> 20));
             let heap_mb = crate::RT.get().map(|r| (r.mem.data_size() >> 20) as u64).unwrap_or(0);
             let status = match tier { 3 => " · LOW", 2 => " · CLEANING", _ => "" };
             crate::debug::set_ram_tracker(format!("RAM {:.1} GB · {} MB free{}", fp as f64 / 1024.0, avail_mb, status), tier);
@@ -3601,7 +3606,7 @@ impl Gpu {
         // caches, never game-owned objects, so an early purge cannot
         // corrupt the game; the 5 s floor stops purge thrash.
         let available = crate::performance::available_memory().unwrap_or(u64::MAX);
-        let tier_now = Self::memory_tier(crate::footprint_mb(), available >> 20);
+        let tier_now = Self::memory_tier(crate::footprint_mb(), crate::performance::available_memory().map(|a| a >> 20));
         let throttle = if tier_now >= 1 { 5 } else { 15 };
         if !crate::performance::MEMORY_PRESSURE.load(Ordering::Relaxed) || now.duration_since(self.last_cleanup) < Duration::from_secs(throttle) { return; }
         if tier_now >= 3 {
@@ -3668,9 +3673,10 @@ impl Gpu {
         self.frame_slot_done.fill(None);
         let _ = self.device.poll(PollType::Poll);
         let after = crate::footprint_mb();
-        let remaining = crate::performance::available_memory().unwrap_or(0) >> 20;
-        log(&format!("memory cleanup: {before} -> {after} MB, remaining {remaining} MB; cleared {bg_before} bind groups, {} pipelines, {views_cleared} cached views; temporary 30 FPS limit", pipes_before - self.pipelines.len()));
-        crate::debug::sample_forced(after, remaining, crate::RT.get().map(|r| (r.mem.data_size() >> 20) as u64).unwrap_or(0), Some(self.counts()));
+        let remaining = crate::performance::available_memory().map(|a| a >> 20);
+        let remaining_mb = remaining.unwrap_or(0);
+        log(&format!("memory cleanup: {before} -> {after} MB, remaining {remaining_mb} MB; cleared {bg_before} bind groups, {} pipelines, {views_cleared} cached views; temporary 30 FPS limit", pipes_before - self.pipelines.len()));
+        crate::debug::sample_forced(after, remaining_mb, crate::RT.get().map(|r| (r.mem.data_size() >> 20) as u64).unwrap_or(0), Some(self.counts()));
         // Critical tier after a purge: if the footprint is still over
         // the line 3 s later, the purge is not keeping up and jetsam is
         // seconds away. Pause the game instead of stopping it: the loop

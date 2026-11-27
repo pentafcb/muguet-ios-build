@@ -400,6 +400,9 @@ final class Importer: ObservableObject {
     private var lastProgressTime = 0.0
 
     func run(_ url: URL) {
+        // A second Import tap while one is running used to start a
+        // second muguet_import on the same destination. Ignore it.
+        guard progress == nil else { return }
         error = nil
         progress = 0
         DispatchQueue.global(qos: .userInitiated).async {
@@ -1359,7 +1362,7 @@ struct CLPresetButtons: View {
 
 // Slide-in settings panel, mirroring CloudLauncher's panelOverlay: dim
 // backdrop 0.55 tap-to-close, panel min(92% screen width, 600) — 92% (not
-// CloudLauncher's 60%) because this launcher runs on iPhone portrait,
+// CloudLauncher's 60%) because this launcher runs on iPhone landscape,
 // #11131B at 0.97 opacity, rounded 18, shadow. Every control from the old
 // Form lives here with the same bindings, actions and alert messages.
 // The 11 packs that ship with the game, lowercased. They are never
@@ -1908,7 +1911,11 @@ struct CLSettingsPanel: View {
                 modsWorking = false
                 if ok {
                     modsStatus = "Removed \(name)."
-                    s.sandboxVehicles.removeAll { $0 == name }
+                    // Folder names come from disk and may carry capitals
+                    // while sandboxVehicles entries are lowercased at add
+                    // time, so compare lowercased or a removed mod keeps
+                    // auto-spawning.
+                    s.sandboxVehicles.removeAll { $0.lowercased() == name.lowercased() }
                     try? s.save()
                     refreshMods()
                 } else {
@@ -2180,7 +2187,13 @@ struct LauncherView: View {
                     }
                 }
                 if showingSettings {
-                    CLSettingsPanel(screenWidth: geo.size.width, s: s, showingCheatSheet: $showingCheatSheet, showingHUDEditor: $showingHUDEditor, showingResetAlert: $showingResetAlert, resetAlertMessage: $resetAlertMessage, newVehicleCode: $newVehicleCode, onClose: { showingSettings = false })
+                    CLSettingsPanel(screenWidth: geo.size.width, s: s, showingCheatSheet: $showingCheatSheet, showingHUDEditor: $showingHUDEditor, showingResetAlert: $showingResetAlert, resetAlertMessage: $resetAlertMessage, newVehicleCode: $newVehicleCode, onClose: {
+                        // Panel edits only reached disk via Play/Continue
+                        // before, so closing the panel silently lost
+                        // them. Save here; Play still saves again.
+                        try? s.save()
+                        showingSettings = false
+                    })
                         .transition(.opacity)
                         .zIndex(20)
                 }
@@ -2188,6 +2201,10 @@ struct LauncherView: View {
         }
         .preferredColorScheme(.dark)
         .animation(.spring(response: 0.38, dampingFraction: 0.9), value: showingSettings)
+        // checkStartupError used to run only from importView, so a
+        // startup-error file was never shown (or cleared) once the
+        // game data was already ready. Check on every appearance.
+        .onAppear(perform: checkStartupError)
         .sheet(isPresented: $picking) {
             DocumentPicker(isPresented: $picking, onPick: { url in
                 importer.run(url)
@@ -2235,11 +2252,11 @@ struct LauncherView: View {
                 LinearGradient(colors: [Color(hex: "1F7A33"), Color(hex: "0B1E12")],
                                startPoint: .topLeading, endPoint: .bottomTrailing)
                 // Large light "V" behind the image, so the tile still looks
-                // right if the AppIcon asset does not resolve.
+                // right if the hero icon asset does not resolve.
                 Text("V")
                     .font(.system(size: 64, weight: .light))
                     .foregroundColor(.white.opacity(0.85))
-                Image("AppIcon")
+                Image("HeroIcon")
                     .resizable()
                     .aspectRatio(contentMode: .fill)
             }
@@ -2463,7 +2480,8 @@ struct LauncherView: View {
             return
         }
         if s.name.trimmingCharacters(in: .whitespaces).isEmpty {
-            s.name = "Player" + String(Int.random(in: 100...999))
+            // Settled default is Pentacampeon, not a random Player name.
+            s.name = "Pentacampeon"
         }
         do { try s.save() } catch { self.error = "Could not save settings: \(error.localizedDescription)"; return }
         s.applyCustomLayout()
@@ -2561,7 +2579,12 @@ public func muguetOpenMenu() {
     DispatchQueue.main.async {
         guard let root = foregroundRootViewController() else { return }
         var presenter = root
-        while let child = presenter.presentedViewController { presenter = child }
+        // A double MENU tap used to stack a second menu alert on the
+        // first. Bail if one is already anywhere in the chain.
+        while let child = presenter.presentedViewController {
+            if let alert = child as? UIAlertController, alert.title == "GTA V Menu" { return }
+            presenter = child
+        }
 
         let alert = UIAlertController(title: "GTA V Menu", message: nil, preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "Continue playing", style: .cancel))
@@ -2696,8 +2719,13 @@ public func muguetShowConsole() {
     DispatchQueue.main.async {
         guard let root = foregroundRootViewController() else { return }
         var presenter = root
-        while let child = presenter.presentedViewController { presenter = child }
-        // Do not stack consoles if the button is tapped twice.
+        // Do not stack consoles if the button is tapped twice. The
+        // old check only looked at the topmost controller, so a menu
+        // alert sitting on top of the console let a second one in.
+        while let child = presenter.presentedViewController {
+            if child is UIHostingController<ConsoleView> { return }
+            presenter = child
+        }
         if presenter is UIHostingController<ConsoleView> { return }
         weak var host: UIHostingController<ConsoleView>?
         let view = ConsoleView(onClose: { host?.dismiss(animated: true) })

@@ -493,10 +493,13 @@ fn net() -> Option<&'static Net> {
 fn build_net() -> Option<Net> {
     let host = std::env::var("MUGUET_HOST").map(|v| v == "1").unwrap_or(false);
     if host {
+        // Player limit from the launcher (config.json max_players via
+        // MUGUET_MAX_PLAYERS); server::run clamps it to 2..=64.
+        let max_players = std::env::var("MUGUET_MAX_PLAYERS").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(32);
         std::thread::Builder::new()
             .name("mp-server".into())
-            .spawn(|| {
-                if let Err(e) = crate::server::run(proto::DEFAULT_PORT, 32) {
+            .spawn(move || {
+                if let Err(e) = crate::server::run(proto::DEFAULT_PORT, max_players) {
                     eprintln!("[mp] cannot host on port {}: {e}", proto::DEFAULT_PORT);
                 }
             })

@@ -515,12 +515,16 @@ impl Overlay {
             match s.on_foot.map(|(_, a)| a) {
                 Some(Act::KeyNav("Escape")) | Some(Act::NavToggle) => return s.on_foot,
                 Some(Act::Key("ArrowUp")) if !self.menu.pause_requested => return s.on_foot,
+                // MENU and CONSOLE stay visible in these states
+                // (relabel exempts them), so they must stay tappable.
+                Some(Home) | Some(Console) => return s.on_foot,
                 _ => return None,
             }
         }
         if self.menu.pause_requested {
             return match s.on_foot.map(|(_, a)| a) {
                 Some(KeyNav("Escape")) | Some(NavToggle) => s.on_foot,
+                Some(Home) | Some(Console) => s.on_foot,
                 _ => None,
             };
         }
@@ -653,8 +657,11 @@ impl Overlay {
                             }
                         }
                         Some(FirstPerson) => {
+                            // Only the script toggle: the old KeyV press
+                            // here toggled the camera a second time (net
+                            // zero change) and never sent a key-up, so
+                            // KeyV stayed stuck down in the input block.
                             crate::mp::request_toggle_first_person();
-                            input::key("KeyV", true, false, None, false);
                         }
                         Some(SpawnCar) => {
                             crate::mp::request_spawn_first_vehicle();

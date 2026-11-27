@@ -247,7 +247,12 @@ const SETTING_VARS: &[&str] = &[
     "MUGUET_SCALE", "MUGUET_MOUSE_SENS", "MUGUET_PAD_SENS", "MUGUET_TOUCH_SENS", "MUGUET_AIM_SENS", "MUGUET_AIM_MODE", "MUGUET_FIRE_AIM",
     "MUGUET_RES", "MUGUET_FULLSCREEN", "MUGUET_MUTE", "MUGUET_HOST", "MUGUET_SERVER", "MUGUET_ROOM", "MUGUET_NAME", "MUGUET_PVP",
     "MUGUET_MODE", "MUGUET_PROMOTION_SYNC", "MUGUET_DEEP_OPTIMIZATION", "MUGUET_BUTTON_SCALE", "MUGUET_BUTTON_OFFSET_X", "MUGUET_BUTTON_OFFSET_Y",
-    "MUGUET_BUTTON_OPACITY", "MUGUET_STICK_OFFSET_X", "MUGUET_STICK_OFFSET_Y"
+    "MUGUET_BUTTON_OPACITY", "MUGUET_STICK_OFFSET_X", "MUGUET_STICK_OFFSET_Y",
+    // These three were missing: reload() clears only the vars listed
+    // here, and settings() uses set_default (never overwrites), so a
+    // changed sandbox list / player limit in the launcher was silently
+    // ignored on Play until the app was force-quit and relaunched.
+    "MUGUET_SANDBOX_VEHICLE", "MUGUET_SANDBOX_VEHICLES", "MUGUET_MAX_PLAYERS"
 ];
 
 #[no_mangle]
@@ -347,6 +352,10 @@ fn settings(cfg_path: &Path) -> Vec<String> {
     }
     if let Some(v) = text("player_name") { set_default("MUGUET_NAME", v); }
     set_default("MUGUET_PVP", if flag("pvp") { "1" } else { "0" });
+    // Player limit for hosted rooms: the launcher saves max_players
+    // (16/32/64) and the hosted server used to ignore it and always
+    // run 32. Read it here so mp.rs can pass it to server::run.
+    set_default("MUGUET_MAX_PLAYERS", cfg.get("max_players").and_then(|v| v.as_u64()).filter(|v| [16, 32, 64].contains(v)).unwrap_or(32).to_string());
 
     let mut engine_args = Vec::new();
 
@@ -489,17 +498,18 @@ fn find_all_settings_files(dir: &Path) -> Vec<PathBuf> {
 #[no_mangle]
 pub extern "C" fn muguet_reset_game_settings() -> bool {
     let base = support_dir().join("saves");
-    let mut modified = false;
     let paths = find_all_settings_files(&base);
     for p in paths {
         let _ = std::fs::remove_file(&p);
-        modified = true;
     }
     let default_dir = base.join("userdata/Documents/Rockstar Games/GTA V");
     let _ = std::fs::create_dir_all(&default_dir);
-    let _ = std::fs::write(default_dir.join("settings.xml"), DEFAULT_SAFE_SETTINGS_XML);
+    // The old code returned true whenever any settings.xml was found
+    // (even if its removal failed) and ignored the default write, so
+    // a failed reset still reported success. Report the write.
+    let ok = std::fs::write(default_dir.join("settings.xml"), DEFAULT_SAFE_SETTINGS_XML).is_ok();
     eprintln!("[config] GTA V settings.xml reset to safe defaults");
-    modified
+    ok
 }
 
 const LOW_RAM_POTATO_SETTINGS_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -559,14 +569,17 @@ const LOW_RAM_POTATO_SETTINGS_XML: &str = r#"<?xml version="1.0" encoding="UTF-8
 pub extern "C" fn muguet_apply_low_ram_preset() -> bool {
     let base = support_dir().join("saves");
     let paths = find_all_settings_files(&base);
+    // The old code returned true unconditionally and ignored every
+    // write error, so a failed preset still reported success.
+    let mut ok = true;
     for p in &paths {
-        let _ = std::fs::write(p, LOW_RAM_POTATO_SETTINGS_XML);
+        if std::fs::write(p, LOW_RAM_POTATO_SETTINGS_XML).is_err() { ok = false; }
     }
     let default_dir = base.join("userdata/Documents/Rockstar Games/GTA V");
     let _ = std::fs::create_dir_all(&default_dir);
-    let _ = std::fs::write(default_dir.join("settings.xml"), LOW_RAM_POTATO_SETTINGS_XML);
+    if std::fs::write(default_dir.join("settings.xml"), LOW_RAM_POTATO_SETTINGS_XML).is_err() { ok = false; }
     eprintln!("[config] applied Low-RAM Potato Mode preset (target ~800MB - 1GB RAM)");
-    true
+    ok
 }
 
 const ULTRA_LOW_SETTINGS_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -626,14 +639,17 @@ const ULTRA_LOW_SETTINGS_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 pub extern "C" fn muguet_apply_ultra_low_preset() -> bool {
     let base = support_dir().join("saves");
     let paths = find_all_settings_files(&base);
+    // The old code returned true unconditionally and ignored every
+    // write error, so a failed preset still reported success.
+    let mut ok = true;
     for p in &paths {
-        let _ = std::fs::write(p, ULTRA_LOW_SETTINGS_XML);
+        if std::fs::write(p, ULTRA_LOW_SETTINGS_XML).is_err() { ok = false; }
     }
     let default_dir = base.join("userdata/Documents/Rockstar Games/GTA V");
     let _ = std::fs::create_dir_all(&default_dir);
-    let _ = std::fs::write(default_dir.join("settings.xml"), ULTRA_LOW_SETTINGS_XML);
+    if std::fs::write(default_dir.join("settings.xml"), ULTRA_LOW_SETTINGS_XML).is_err() { ok = false; }
     eprintln!("[config] applied Ultra Low preset (shadows and reflections off, 25% resolution)");
-    true
+    ok
 }
 
 #[derive(Clone, Copy)]

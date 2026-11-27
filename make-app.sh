@@ -16,12 +16,16 @@ if [ -n "$GAME" ]; then
   mkdir -p target/mac-game
   case "$GAME" in
     *.zip)
-      ENTRY="$(unzip -Z1 "$GAME" | grep -E '(^|/)b/[^/]+/game\.wasm$' | head -1)"
+      # Pin the known build first; sorted fallback keeps the choice
+      # deterministic if the zip ever holds more than one build.
+      ENTRY="$(unzip -Z1 "$GAME" | grep -E '(^|/)b/8b0b5899ed/game\.wasm$' | head -1)"
+      [ -n "$ENTRY" ] || ENTRY="$(unzip -Z1 "$GAME" | grep -E '(^|/)b/[^/]+/game\.wasm$' | sort | head -1)"
       [ -n "$ENTRY" ] || { echo "$GAME has no b/<build>/game.wasm"; exit 1; }
       unzip -p "$GAME" "$ENTRY" > target/mac-game/game.wasm ;;
     *) cp "$GAME" target/mac-game/game.wasm ;;
   esac
   ./target/release/muguet --precompile target/mac-game/game.wasm target/mac-game/game.cwasm
+  test -s target/mac-game/game.cwasm || { echo "precompile produced an empty game.cwasm"; exit 1; }
   rm target/mac-game/game.wasm
   MUGUET_GAME_CODE="$PWD/target/mac-game/game.cwasm" cargo build --locked --release --no-default-features --target-dir target/embed
   BIN=target/embed/release/muguet
@@ -58,7 +62,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleIconName</key><string>muguet</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>0.1</string>
-  <key>CFBundleVersion</key><string>1</string>
+  <key>CFBundleVersion</key><string>8</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.games</string>
   <key>GCSupportsGameMode</key><true/>

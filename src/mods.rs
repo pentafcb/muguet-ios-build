@@ -198,6 +198,10 @@ pub fn install_mod(picked: &Path, name_hint: &str) -> Result<String> {
     if ext == "zip" {
         extract_dlc_rpf(picked, &dest)?;
     } else {
+        // Same 2 GB cap as the zip path: a bare .rpf used to copy
+        // unbounded, so a bad pick could fill the disk.
+        let size = std::fs::metadata(picked).map(|m| m.len()).unwrap_or(0);
+        anyhow::ensure!(size <= 2 << 30, "dlc.rpf is too large");
         std::fs::copy(picked, &dest).with_context(|| format!("cannot copy {}", picked.display()))?;
     }
     add_dlc_list_line(&name)?;
