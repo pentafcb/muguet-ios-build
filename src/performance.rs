@@ -27,8 +27,19 @@ pub fn set_frame_limit(fps: f64) {
 
 pub fn frame_limit() -> u32 { FRAME_LIMIT.load(Ordering::Relaxed) }
 
-pub fn engine_frame_limit(fps: f64) -> u8 {
-    if fps <= 0.0 || fps > 60.0 { 0 } else if fps <= 30.0 { 2 } else { 1 }
+pub fn engine_frame_limit(_fps: f64) -> u8 {
+    // Always 0 (engine limiter off). The host FramePacer already
+    // paces presents to the configured FPS, so the engine limiter is
+    // redundant — and it wedges the game. With -frameLimit=2 (the 30
+    // FPS presets) the engine deadlocked: main 100% "Wait for render
+    // [semaphore]" while the render thread waited for the next queued
+    // frame, draws/presents frozen, host idle, memory fine. The
+    // limiter's own wait is the prime suspect for consuming the
+    // render-completion signal the frame-boundary wait needs, leaving
+    // both threads waiting on each other. 120 FPS already ran with
+    // -frameLimit=0 and never wedged, so every preset uses 0 now and
+    // the host does all the pacing.
+    0
 }
 
 pub fn available_memory() -> Option<u64> {
@@ -134,6 +145,7 @@ mod tests {
         assert_eq!(pacer.delay(now + Duration::from_secs(3), 120), Duration::ZERO);
         assert_eq!(pacer.delay(now + Duration::from_secs(3), 30), Duration::ZERO);
         assert_eq!(engine_frame_limit(120.0), 0);
-        assert_eq!(engine_frame_limit(60.0), 1);
+        assert_eq!(engine_frame_limit(60.0), 0);
+        assert_eq!(engine_frame_limit(30.0), 0);
     }
 }
