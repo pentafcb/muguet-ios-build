@@ -38,6 +38,9 @@ pub static STARTED: AtomicBool = AtomicBool::new(false);
 pub static OCCLUDED: AtomicBool = AtomicBool::new(false);
 
 pub static SUSPENDED: AtomicBool = AtomicBool::new(false);
+// Set while the game is parked for low memory. The event-loop thread
+// mirrors it to the pause overlay; the GPU thread clears it on recovery.
+pub static MEMORY_PAUSED: AtomicBool = AtomicBool::new(false);
 
 pub static PRESENTS: AtomicU64 = AtomicU64::new(0);
 
@@ -876,6 +879,8 @@ pub struct Gpu {
     last_cleanup: Instant,
     pressure_until: Option<Instant>,
     critical_since: Option<Instant>,
+    paused_since: Option<Instant>,
+    resume_since: Option<Instant>,
     requested_refresh: u32,
     errors: Arc<AtomicU64>,
 
@@ -1005,7 +1010,7 @@ impl Gpu {
             frame_slot_done: (0..FRAME_SLOTS).map(|_| None).collect(), last_submit: None, vb_avail: [0; 16],
             dbg_idx: if dbg != 0 { dbg + 424 } else { 0 },
             draws: 0, skipped: 0, presents: 0, pipe_creates: 0, fps_t0: Instant::now(), fps_n0: 0, fps_d0: 0,
-            frame_pacer: Default::default(), last_memory_check: Instant::now(), last_cleanup: Instant::now() - Duration::from_secs(60), pressure_until: None, critical_since: None,
+            frame_pacer: Default::default(), last_memory_check: Instant::now(), last_cleanup: Instant::now() - Duration::from_secs(60), pressure_until: None, critical_since: None, paused_since: None, resume_since: None,
             requested_refresh: 0,
             errors, inflight: Arc::new(AtomicU64::new(0)), submits: 0, submits0: 0, passes: 0, passes0: 0,
         })
@@ -3558,6 +3563,43 @@ impl Gpu {
             if tier >= 2 { self.pressure_until = Some(now + Duration::from_secs(30)); }
             crate::diagnostics::trim();
             crate::debug::sample(fp, avail_mb, heap_mb, Some(self.counts()));
+            // Memory pause supervisor: while paused the game loop is
+            // parked and the purge keeps running, so this 1 s tick is
+            // what watches for recovery. Tier 1 or below for 2 s
+            // means the footprint fell back under the line: resume
+            // where the game left off, no restart. Still critical
+            // after 20 s paused means the footprint is pinned by
+            // game-owned textures the purge can never free, so the
+            // clean stop is the only honest end. Keep the loop parked
+            // while paused even if the app was backgrounded and the
+            // event loop cleared SUSPENDED on resume.
+            if MEMORY_PAUSED.load(Ordering::Relaxed) {
+                if tier <= 1 {
+                    match self.resume_since {
+                        Some(since) if now.duration_since(since) >= Duration::from_secs(2) => {
+                            log(&format!("memory pause: recovered to tier {tier} (footprint {fp} MB, {avail_mb} MB free); resuming the game"));
+                            MEMORY_PAUSED.store(false, Ordering::Relaxed);
+                            SUSPENDED.store(false, Ordering::Relaxed);
+                            self.paused_since = None;
+                            self.resume_since = None;
+                        }
+                        Some(_) => {}
+                        None => { self.resume_since = Some(now); }
+                    }
+                } else {
+                    self.resume_since = None;
+                    SUSPENDED.store(true, Ordering::Relaxed);
+                    if let Some(since) = self.paused_since {
+                        if now.duration_since(since) >= Duration::from_secs(20) {
+                            log("memory pause: still critical after 20 s paused; stopping the game cleanly instead of waiting for jetsam");
+                            MEMORY_PAUSED.store(false, Ordering::Relaxed);
+                            self.paused_since = None;
+                            self.resume_since = None;
+                            crate::app::engine_error("Low memory — the game was stopped before iOS killed it. Reopen Muguet with lower graphics settings.".into());
+                        }
+                    }
+                }
+            }
         }
         // Purge throttle: normally 15 s between purges, because a purge
         // flushes and waits up to 2 s for submitted work. But at ~15 MB/s
@@ -3640,15 +3682,22 @@ impl Gpu {
         crate::debug::sample_forced(after, remaining, crate::RT.get().map(|r| (r.mem.data_size() >> 20) as u64).unwrap_or(0), Some(self.counts()));
         // Critical tier after a purge: if the footprint is still over
         // the line 3 s later, the purge is not keeping up and jetsam is
-        // seconds away — stop the game cleanly with a message instead
-        // of being killed with no warning. Cleared below 2.4 GB, the
-        // danger has passed and the timer resets.
+        // seconds away. Pause the game instead of stopping it: the loop
+        // parks with the wasm state frozen in memory, the purge keeps
+        // running, and the supervisor above resumes play when the
+        // footprint falls back. Cleared below 2.4 GB, the danger has
+        // passed and the timer resets.
         if Self::memory_tier(after, remaining) >= 3 {
             match self.critical_since {
                 Some(since) if now.duration_since(since) >= Duration::from_secs(3) => {
-                    log(&format!("memory cleanup: footprint still {after} MB 3 s after purge; stopping the game cleanly instead of waiting for jetsam"));
                     self.critical_since = None;
-                    crate::app::engine_error("Low memory — the game was stopped before iOS killed it. Reopen Muguet with lower graphics settings.".into());
+                    if !MEMORY_PAUSED.load(Ordering::Relaxed) {
+                        log(&format!("memory cleanup: footprint still {after} MB 3 s after purge; pausing the game until memory recovers"));
+                        MEMORY_PAUSED.store(true, Ordering::Relaxed);
+                        SUSPENDED.store(true, Ordering::Relaxed);
+                        self.paused_since = Some(now);
+                        self.resume_since = None;
+                    }
                 }
                 Some(_) => {}
                 None => { self.critical_since = Some(now); }

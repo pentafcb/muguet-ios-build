@@ -266,6 +266,7 @@ fn settings(cfg_path: &Path) -> Vec<String> {
 
     let deep_optimization = cfg.get("deep_optimization").and_then(|v| v.as_bool()).unwrap_or(false);
     set_default("MUGUET_DEEP_OPTIMIZATION", if deep_optimization { "1" } else { "0" });
+    let ultra_low = cfg.get("ultra_low").and_then(|v| v.as_bool()).unwrap_or(false);
 
     let promotion_sync = cfg.get("promotion_sync").and_then(|v| v.as_bool()).unwrap_or(false);
     crate::performance::set_promotion_sync(promotion_sync);
@@ -332,6 +333,7 @@ fn settings(cfg_path: &Path) -> Vec<String> {
         ped_density: num("ped_density").unwrap_or(0.5),
         distance_scaling: num("distance_scaling").unwrap_or(0.0),
         deep_optimization,
+        ultra_low,
     };
     fix_settings(gfx);
     engine_args
@@ -502,6 +504,73 @@ pub extern "C" fn muguet_apply_low_ram_preset() -> bool {
     true
 }
 
+const ULTRA_LOW_SETTINGS_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Settings>
+  <version value="27" />
+  <configSource>SMC_AUTO</configSource>
+  <graphics>
+    <TextureQuality value="0" />
+    <ShaderQuality value="1" />
+    <ShadowQuality value="0" />
+    <ReflectionQuality value="0" />
+    <ReflectionMSAA value="0" />
+    <SSAO value="0" />
+    <AnisotropicFiltering value="0" />
+    <MSAA value="0" />
+    <MSAAFragments value="0" />
+    <MSAAPostProcess value="0" />
+    <WaterQuality value="0" />
+    <ParticleQuality value="0" />
+    <GrassQuality value="0" />
+    <DeepSurfaceQuality value="0" />
+    <PedLodBias value="-0.500000" />
+    <VehicleLodBias value="-0.500000" />
+    <Shadow_Distance value="0.500000" />
+    <Shadow_SoftShadows value="0" />
+    <Shadow_ParticleShadows value="false" />
+    <Shadow_SplitZStart value="0.930000" />
+    <Shadow_SplitZEnd value="0.890000" />
+    <Shadow_aircraftExpBloom value="0.000000" />
+    <Shadow_DisableScreenSizeCheck value="true" />
+    <Reflection_MipBlur value="false" />
+    <FXAA value="false" />
+    <TXAA value="false" />
+    <Lighting_FogVolumes value="false" />
+    <Shader_SSA value="false" />
+    <DX_Version value="2" />
+    <CityDensity value="0.000000" />
+    <PedVarietyMultiplier value="0.000000" />
+    <VehicleVarietyMultiplier value="0.000000" />
+    <PostFX value="0" />
+    <DoF value="false" />
+    <HdStreamingInFlight value="false" />
+    <MaxLodScale value="0.000000" />
+    <MotionBlurStrength value="0.000000" />
+  </graphics>
+  <system>
+    <Windowed value="2" />
+  </system>
+  <video>
+    <Windowed value="2" />
+    <VSync value="1" />
+  </video>
+</Settings>
+"#;
+
+#[no_mangle]
+pub extern "C" fn muguet_apply_ultra_low_preset() -> bool {
+    let base = support_dir().join("saves");
+    let paths = find_all_settings_files(&base);
+    for p in &paths {
+        let _ = std::fs::write(p, ULTRA_LOW_SETTINGS_XML);
+    }
+    let default_dir = base.join("userdata/Documents/Rockstar Games/GTA V");
+    let _ = std::fs::create_dir_all(&default_dir);
+    let _ = std::fs::write(default_dir.join("settings.xml"), ULTRA_LOW_SETTINGS_XML);
+    eprintln!("[config] applied Ultra Low preset (shadows and reflections off, 25% resolution)");
+    true
+}
+
 #[derive(Clone, Copy)]
 pub struct CustomGraphics {
     pub texture_quality: Option<i64>,
@@ -518,6 +587,7 @@ pub struct CustomGraphics {
     pub ped_density: f64,
     pub distance_scaling: f64,
     pub deep_optimization: bool,
+    pub ultra_low: bool,
 }
 
 fn set_num(new: &mut String, tag: &str, fix: impl Fn(i64) -> i64) {
@@ -596,7 +666,19 @@ fn fix_settings(gfx: CustomGraphics) {
             set_num(&mut new, "TextureQuality", |v| v.min(1));
         }
 
-        if gfx.deep_optimization {
+        if gfx.ultra_low {
+            // Ultra Low: GTA V treats 0 as Off for both shadows and
+            // reflections, so the shadow maps and reflection renders
+            // disappear entirely. Everything else at the potato floor.
+            // ShaderQuality stays 1: the WGSL shader pack only
+            // contains Quality 1 shaders, Quality 0 or 2 black-screens.
+            set_num(&mut new, "ShadowQuality", |_| 0);
+            set_num(&mut new, "ReflectionQuality", |_| 0);
+            set_num(&mut new, "GrassQuality", |_| 0);
+            set_num(&mut new, "WaterQuality", |_| 0);
+            set_num(&mut new, "ParticleQuality", |_| 0);
+            set_num(&mut new, "PostFX", |_| 0);
+        } else if gfx.deep_optimization {
             set_num(&mut new, "ShadowQuality", |_| gfx.shadow_quality.clamp(1, 2));
             set_num(&mut new, "GrassQuality", |_| gfx.grass_quality.clamp(0, 1));
             set_num(&mut new, "ReflectionQuality", |_| gfx.reflection_quality.clamp(1, 2));

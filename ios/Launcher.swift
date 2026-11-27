@@ -35,6 +35,7 @@ final class Settings: ObservableObject {
     // button layout on every FPS change.
     static var cachedPromotionSync = false
     @Published var deepOptimization = false
+    @Published var ultraLow = false
     @Published var maxPlayers = 32
 
     // Granular GTA V Graphics Options
@@ -77,6 +78,7 @@ final class Settings: ObservableObject {
         pedDensity = 0.0
         distanceScaling = -0.5
         deepOptimization = true
+        ultraLow = false
         promotionSync = true
         do { try save() } catch {}
         muguet_reload_settings()
@@ -99,9 +101,34 @@ final class Settings: ObservableObject {
         pedDensity = 0.0
         distanceScaling = -0.5
         deepOptimization = true
+        ultraLow = false
         promotionSync = false
         do { try save() } catch {}
         _ = muguet_apply_low_ram_preset()
+        muguet_reload_settings()
+    }
+
+    func applyUltraLowMode() {
+        fps = 30
+        scale = 0.25
+        textures = 0
+        shadowQuality = 0
+        shadowDistance = 0.5
+        reflectionQuality = 0
+        grassQuality = 0
+        waterQuality = 0
+        particleQuality = 0
+        postFx = 0
+        anisotropicFiltering = 0
+        fxaa = false
+        cityDensity = 0.0
+        pedDensity = 0.0
+        distanceScaling = -0.5
+        deepOptimization = true
+        ultraLow = true
+        promotionSync = false
+        do { try save() } catch {}
+        _ = muguet_apply_ultra_low_preset()
         muguet_reload_settings()
     }
 
@@ -141,9 +168,10 @@ final class Settings: ObservableObject {
         if let v = json["pvp"] as? Bool { pvp = v }
         if let v = json["promotion_sync"] as? Bool { promotionSync = v }
         if let v = json["deep_optimization"] as? Bool { deepOptimization = v }
-        if let v = json["shadow_quality"] as? Int, (1...3).contains(v) { shadowQuality = v }
+        if let v = json["ultra_low"] as? Bool { ultraLow = v }
+        if let v = json["shadow_quality"] as? Int, (0...3).contains(v) { shadowQuality = v }
         if let v = json["shadow_distance"] as? Double { shadowDistance = max(0.5, min(2.0, v)) }
-        if let v = json["reflection_quality"] as? Int, (1...3).contains(v) { reflectionQuality = v }
+        if let v = json["reflection_quality"] as? Int, (0...3).contains(v) { reflectionQuality = v }
         if let v = json["grass_quality"] as? Int, (0...2).contains(v) { grassQuality = v }
         if let v = json["water_quality"] as? Int, (0...2).contains(v) { waterQuality = v }
         if let v = json["particle_quality"] as? Int, (0...2).contains(v) { particleQuality = v }
@@ -196,6 +224,7 @@ final class Settings: ObservableObject {
         json["room_mode"] = roomMode
         json["promotion_sync"] = promotionSync
         json["deep_optimization"] = deepOptimization
+        json["ultra_low"] = ultraLow
         json["max_players"] = maxPlayers
         json["room_digits"] = roomDigits
         json["join_code"] = joinCode
@@ -330,6 +359,9 @@ func muguet_apply_button_layout()
 func muguet_reset_game_settings() -> Bool
 @_silgen_name("muguet_apply_low_ram_preset")
 func muguet_apply_low_ram_preset() -> Bool
+
+@_silgen_name("muguet_apply_ultra_low_preset")
+func muguet_apply_ultra_low_preset() -> Bool
 
 final class Importer: ObservableObject {
     static let shared = Importer()
@@ -1124,6 +1156,23 @@ struct LauncherView: View {
                         .tint(.green)
                         .controlSize(.regular)
                     }
+                    HStack(spacing: 10) {
+                        Button(action: {
+                            s.applyUltraLowMode()
+                            resetAlertMessage = "Ultra Low setup enabled — shadows & reflections off, 25% resolution!"
+                            showingResetAlert = true
+                        }) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "arrow.down.to.line")
+                                Text("Ultra Low").bold()
+                            }
+                            .font(.subheadline)
+                            .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(.orange)
+                        .controlSize(.regular)
+                    }
                     .padding(.vertical, 2)
 
                     Picker("Frame rate (Frame Limit)", selection: $s.fps) {
@@ -1133,6 +1182,7 @@ struct LauncherView: View {
                     }
 
                     Picker("Resolution", selection: $s.scale) {
+                        Text("25% (Ultra low)").tag(0.25)
                         Text("35% (Super light)").tag(0.35)
                         Text("50% (Recommended for 120 FPS)").tag(0.5)
                         Text("65% (Balanced)").tag(0.65)
@@ -1172,6 +1222,7 @@ struct LauncherView: View {
                         s.pedDensity = 0.5
                         s.distanceScaling = 0.0
                         s.deepOptimization = true
+                        s.ultraLow = false
                         s.promotionSync = true
                         try? s.save()
                         muguet_reload_settings()
@@ -1191,6 +1242,7 @@ struct LauncherView: View {
                         .font(.caption).foregroundStyle(.secondary)
 
                     Picker("Shadow Quality", selection: $s.shadowQuality) {
+                        Text("Off (No shadows)").tag(0)
                         Text("Normal (Smoothest)").tag(1)
                         Text("Cao").tag(2)
                         Text("Very High").tag(3)
@@ -1203,6 +1255,7 @@ struct LauncherView: View {
                     }
 
                     Picker("Reflection Quality", selection: $s.reflectionQuality) {
+                        Text("Off (No reflections)").tag(0)
                         Text("Normal").tag(1)
                         Text("Cao").tag(2)
                         Text("Very High").tag(3)

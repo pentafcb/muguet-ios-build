@@ -39,6 +39,7 @@ struct App {
     startup_since: Option<std::time::Instant>,
     startup_stage: String,
     startup_warning_shown: bool,
+    memory_pause_shown: bool,
 
     #[cfg_attr(not(target_os = "ios"), allow(dead_code))]
     launcher_shown: bool,
@@ -219,10 +220,31 @@ impl ApplicationHandler for App {
         }
         if let Some(message) = ENGINE_ERROR.lock().unwrap_or_else(|e| e.into_inner()).take() {
             self.startup_since = None;
+            // A terminal error always wins over a memory pause: clear
+            // the pause flag so the mirror below cannot overwrite the
+            // stop message with the pause overlay on the next tick.
+            gpu::MEMORY_PAUSED.store(false, std::sync::atomic::Ordering::Relaxed);
+            self.memory_pause_shown = false;
             gpu::SUSPENDED.store(true, std::sync::atomic::Ordering::Relaxed);
             input::set_focus(false);
             #[cfg(target_os = "ios")]
             crate::touch::loading(Some(&format!("Game stopped\n{message}\nReopen Muguet to share its diagnostic log.")));
+        }
+        // Memory pause mirror: the GPU thread parks the game when the
+        // footprint stays critical and resumes it when memory
+        // recovers. Show a pause overlay while parked, hide it on
+        // resume. Focus returns on resume through touch refresh,
+        // which re-enables it whenever the loop is not suspended.
+        let paused = gpu::MEMORY_PAUSED.load(std::sync::atomic::Ordering::Relaxed);
+        if paused && !self.memory_pause_shown {
+            self.memory_pause_shown = true;
+            input::set_focus(false);
+            #[cfg(target_os = "ios")]
+            crate::touch::loading(Some("Paused — low memory.\nCleaning up, the game resumes when memory recovers."));
+        } else if !paused && self.memory_pause_shown {
+            self.memory_pause_shown = false;
+            #[cfg(target_os = "ios")]
+            crate::touch::loading(None);
         }
         if let Some(rx) = &self.runtime_rx {
             match rx.try_recv() {
@@ -445,7 +467,7 @@ pub fn run(rt: Option<Arc<Runtime>>, startup: crate::config::Startup, args: Vec<
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Wait);
     let mut app = App { mode_chosen: false, rt, startup, args, window: None, started: false, runtime_rx: None,
-        startup_since: None, startup_stage: String::new(), startup_warning_shown: false,
+        startup_since: None, startup_stage: String::new(), startup_warning_shown: false, memory_pause_shown: false,
         launcher_shown: false, locked: cfg!(target_os = "ios"), mods: ModifiersState::empty(), wheel_accum: 0.0 };
     event_loop.run_app(&mut app)?;
     Ok(())
