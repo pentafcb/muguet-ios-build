@@ -2136,14 +2136,34 @@ struct LauncherView: View {
     var body: some View {
         GeometryReader { geo in
             ZStack(alignment: .topLeading) {
-                Color.black.ignoresSafeArea()
-                // Static dark-green glow across the top, GTA V brand green.
-                // No TimelineView animation: the launcher stays still and fast.
-                Circle()
-                    .fill(Color(hex: "1F7A33").opacity(0.30))
-                    .frame(width: 560, height: 400)
-                    .blur(radius: 110)
-                    .offset(x: geo.size.width * 0.5 - 280, y: -190)
+                if isOverlay {
+                    Color.black.ignoresSafeArea()
+                    // Static dark-green glow across the top, GTA V brand green.
+                    // No TimelineView animation: the launcher stays still and fast.
+                    Circle()
+                        .fill(Color(hex: "1F7A33").opacity(0.30))
+                        .frame(width: 560, height: 400)
+                        .blur(radius: 110)
+                        .offset(x: geo.size.width * 0.5 - 280, y: -190)
+                } else {
+                    // Los Santos panorama, full-bleed and centered: on a portrait
+                    // phone scaledToFill crops the sides, the downtown skyline
+                    // in the center stays visible.
+                    Image("BackgroundLosSantos")
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .ignoresSafeArea()
+                    // Dark gradient overlay so the white header text, PLAY
+                    // button, mode rail, quick rows and credits stay readable.
+                    LinearGradient(
+                        stops: [
+                            .init(color: Color.black.opacity(0.55), location: 0.0),
+                            .init(color: Color.black.opacity(0.25), location: 0.5),
+                            .init(color: Color.black.opacity(0.75), location: 1.0)
+                        ],
+                        startPoint: .top, endPoint: .bottom)
+                        .ignoresSafeArea()
+                }
                 VStack(alignment: .leading, spacing: 0) {
                     headerRow
                     ScrollView(.vertical, showsIndicators: false) {
@@ -2277,20 +2297,27 @@ struct LauncherView: View {
     private var modeRail: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(alignment: .bottom, spacing: 12) {
-                modeTile(title: "Story", icon: "gamecontroller", index: 0)
-                modeTile(title: "Sandbox", icon: "map", index: 1)
-                modeTile(title: "Online", icon: "globe", index: 2)
+                modeTile(title: "Story", subtitle: "Story Mode", icon: "gamecontroller", image: "TileStory", index: 0)
+                modeTile(title: "Sandbox", subtitle: "Sandbox · Free Roam", icon: "map", image: "TileSandbox", index: 1)
+                modeTile(title: "Online", subtitle: "Online · Multiplayer", icon: "globe", image: "TileOnline", index: 2)
             }
         }
     }
 
-    private func modeTile(title: String, icon: String, index: Int) -> some View {
+    private func modeTile(title: String, subtitle: String, icon: String, image: String, index: Int) -> some View {
         let focused = selectedMode == index
         let size: CGFloat = focused ? 128 : 100
         return Button { selectMode(index) } label: {
             ZStack {
-                LinearGradient(colors: [Color(hex: "1F7A33"), Color(hex: "0B1E12")],
-                               startPoint: .topLeading, endPoint: .bottomTrailing)
+                // GTA artwork photo, full-bleed in the tile.
+                Image(image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: size, height: size)
+                // Bottom dark gradient so the icon, name and subtitle
+                // stay readable over the photo.
+                LinearGradient(colors: [Color.black.opacity(0.0), Color.black.opacity(0.72)],
+                               startPoint: .top, endPoint: .bottom)
                 VStack(spacing: 6) {
                     Image(systemName: icon)
                         .font(.system(size: 30, weight: .light))
@@ -2298,6 +2325,18 @@ struct LauncherView: View {
                         .font(.system(size: 11, weight: .medium))
                 }
                 .foregroundColor(.white.opacity(0.9))
+                // Subtitle strip, only on the focused tile.
+                if focused {
+                    VStack {
+                        Spacer()
+                        Text(subtitle)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 9)
+                            .padding(.bottom, 6)
+                    }
+                }
             }
             .frame(width: size, height: size)
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
