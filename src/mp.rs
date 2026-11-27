@@ -194,6 +194,13 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("GetPedLastWeaponImpactCoord", "weapon_commands::CommandGetPedLastWeaponImpactCoord(int, rage::Vector3&)"),
     ("RequestModel", "streaming_commands::CommandRequestModel(int)"),
     ("HasModelLoaded", "streaming_commands::HasModelLoaded(int)"),
+    // FiveM-style spawn validation + release. The wasm spells these
+    // differently from the FiveM names: CdImage (capital I), IsThis
+    // ModelAVehicle, MarkModelAsNoLongerNeeded. Verified present in
+    // game.wasm (SHA-matched) before wiring them in.
+    ("IsModelInCdImage", "streaming_commands::IsModelInCdImage(int)"),
+    ("IsModelAVehicle", "streaming_commands::CommandIsThisModelAVehicle(int)"),
+    ("SetModelAsNoLongerNeeded", "streaming_commands::CommandMarkModelAsNoLongerNeeded(int)"),
     ("TaskGoStraightToCoord", "task_commands::CommandTaskGoStraightToCoord(int, rage::scrVector const&, float, int, float, float)"),
     ("TaskAimGunAtCoord", "task_commands::CommandTaskAimGunAtCoord(int, rage::scrVector const&, int, bool, bool)"),
     ("TaskEnterVehicle", "task_commands::CommandTaskEnterVehicle(int, int, int, int, float, int, char const*)"),
@@ -1190,6 +1197,7 @@ pub fn script_tick(caller: &mut Caller<'_, HostState>, thread: u64, tls: u64) ->
         update_camera_mode(&mut c);
         sandbox_starter_vehicle(&mut c, game);
         poll_spawn_request(&mut c, game);
+        poll_console_actions(&mut c);
 
         if WANT_BULLETS.swap(false, Ordering::Relaxed) {
             more_bullets(&mut c);
@@ -1242,6 +1250,17 @@ impl Cmd<'_, '_> {
             Some(Val::I32(v)) => v,
             Some(Val::I64(v)) => v as i32,
             _ => 0,
+        }
+    }
+    // Like i(), but None when the native is not wired (patch skipped
+    // it) or it trapped, instead of a silent 0. Used by the spawn
+    // validation: a missing native must fall back to the old wait
+    // path, not report every model invalid.
+    fn i_opt(&mut self, cmd: &str, args: &[Val]) -> Option<i32> {
+        match call(self.caller, &format!("mp:{cmd}"), args) {
+            Some(Val::I32(v)) => Some(v),
+            Some(Val::I64(v)) => Some(v as i32),
+            _ => None,
         }
     }
     fn f(&mut self, cmd: &str, args: &[Val]) -> f32 {
@@ -2396,6 +2415,75 @@ pub extern "C" fn muguet_spawn_vehicle(code: *const std::ffi::c_char) {
     }
 }
 
+// Console actions that need the game script thread: natives only
+// exist on the Cmd bridge there, and muguet_console_command runs on
+// the Swift main thread. Commands queue an action here; script_tick
+// drains the queue (same pattern as SPAWN_REQUEST).
+enum ConsoleAction {
+    Heal,
+    Kill,
+    FixCar,
+    Teleport(f32, f32, f32),
+    Coords,
+    Weather(String),
+}
+
+static CONSOLE_ACTIONS: Mutex<Vec<ConsoleAction>> = Mutex::new(Vec::new());
+
+fn queue_console_action(action: ConsoleAction) {
+    if let Ok(mut q) = CONSOLE_ACTIONS.lock() { q.push(action); }
+}
+
+fn poll_console_actions(c: &mut Cmd) {
+    let actions: Vec<ConsoleAction> = CONSOLE_ACTIONS.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
+    for action in actions {
+        let ped = c.i("PlayerPedId", &[]);
+        if ped == 0 || !c.exists(ped) {
+            crate::debug::console_line("console: no player ped yet — try again once the world is loaded");
+            continue;
+        }
+        match action {
+            ConsoleAction::Heal => {
+                c.i("SetEntityHealth", &[i(ped), i(AVATAR_HEALTH), i(0)]);
+                c.i("SetPedArmour", &[i(ped), i(100)]);
+                crate::debug::console_line("healed: health + armor restored");
+            }
+            ConsoleAction::Kill => {
+                c.i("SetEntityHealth", &[i(ped), i(0), i(0)]);
+                crate::debug::console_line("you are dead");
+            }
+            ConsoleAction::FixCar => {
+                if c.i("IsPedInAnyVehicle", &[i(ped), b(false)]) == 0 {
+                    crate::debug::console_line("fix: you are not in a vehicle");
+                } else {
+                    let veh = c.i("GetVehiclePedIsIn", &[i(ped), b(false)]);
+                    c.i("SetVehicleFixed", &[i(veh)]);
+                    c.i("SetVehicleEngineHealth", &[i(veh), f(1000.0)]);
+                    c.i("SetVehicleBodyHealth", &[i(veh), f(1000.0)]);
+                    c.i("SetVehiclePetrolTankHealth", &[i(veh), f(1000.0)]);
+                    c.i("SetVehicleDeformationFixed", &[i(veh)]);
+                    crate::debug::console_line("vehicle repaired");
+                }
+            }
+            ConsoleAction::Teleport(x, y, z) => {
+                let pos = c.vec_arg(1, [x, y, z]);
+                c.i("SetEntityCoordsNoOffset", &[i(ped), pos, b(false), b(false), b(false)]);
+                crate::debug::console_line(&format!("teleported to {x:.1}, {y:.1}, {z:.1}"));
+            }
+            ConsoleAction::Coords => {
+                let pos = c.v("GetEntityCoords", &[i(ped), b(false)]);
+                let heading = c.f("GetEntityHeading", &[i(ped)]);
+                crate::debug::console_line(&format!("coords: {:.1}, {:.1}, {:.1}  heading {:.0}", pos[0], pos[1], pos[2], heading));
+            }
+            ConsoleAction::Weather(name) => {
+                c.c_str(S_NAME, &name);
+                c.i("SetWeatherTypeNowPersist", &[c.ptr(S_NAME)]);
+                crate::debug::console_line(&format!("weather: {name}"));
+            }
+        }
+    }
+}
+
 // In-game console commands, called from Swift (ConsoleView). The
 // command itself is echoed into the buffer with a "> " prefix, like
 // the FiveM console. "close" is handled on the Swift side (dismiss);
@@ -2408,17 +2496,103 @@ pub extern "C" fn muguet_console_command(code: *const std::ffi::c_char) {
     let mut parts = raw.trim().split_whitespace();
     let Some(cmd) = parts.next() else { return; };
     match cmd {
-        "spawn" => {
+        "spawn" | "car" => {
             let Some(model) = parts.next() else {
-                crate::debug::console_line("usage: spawn <vehicle code>  (e.g. spawn loweyezv)");
+                crate::debug::console_line("usage: car <vehicle code>  (e.g. car loweyezv, car adder)");
                 return;
             };
             let model = model.to_lowercase();
-            crate::debug::console_line(&format!("spawn {model} requested"));
+            crate::debug::console_line(&format!("{cmd} {model} requested"));
             request_spawn_vehicle(model);
         }
+        "heal" => queue_console_action(ConsoleAction::Heal),
+        "kill" => queue_console_action(ConsoleAction::Kill),
+        "fix" => queue_console_action(ConsoleAction::FixCar),
+        "tp" => {
+            let x: Option<f32> = parts.next().and_then(|s| s.parse().ok());
+            let y: Option<f32> = parts.next().and_then(|s| s.parse().ok());
+            let z: Option<f32> = parts.next().and_then(|s| s.parse().ok());
+            match (x, y, z) {
+                (Some(x), Some(y), Some(z)) => queue_console_action(ConsoleAction::Teleport(x, y, z)),
+                _ => crate::debug::console_line("usage: tp <x> <y> <z>  (e.g. tp 100 200 30 — see coords)"),
+            }
+        }
+        "coords" => queue_console_action(ConsoleAction::Coords),
+        "weather" => {
+            let Some(name) = parts.next() else {
+                crate::debug::console_line("usage: weather <name>  (e.g. weather RAIN — see help for the list)");
+                return;
+            };
+            let name = name.to_uppercase();
+            if proto::WEATHERS.contains(&name.as_str()) {
+                queue_console_action(ConsoleAction::Weather(name));
+            } else {
+                crate::debug::console_line(&format!("unknown weather: {name} (try: help)"));
+            }
+        }
+        "cheat" => {
+            let Some(code) = parts.next() else {
+                crate::debug::console_line("usage: cheat <CODE>  (e.g. cheat TURTLE, cheat LAWYERUP)");
+                return;
+            };
+            if crate::input::muguet_is_multiplayer() {
+                crate::debug::console_line("cheat blocked in multiplayer mode");
+                return;
+            }
+            crate::input::apply_cheat(code);
+            crate::debug::console_line(&format!("cheat {code} sent"));
+        }
+        "fp" => {
+            request_toggle_first_person();
+            crate::debug::console_line("first-person toggled");
+        }
+        "ram" => {
+            let (text, _) = crate::debug::ram_tracker();
+            if text.is_empty() {
+                crate::debug::console_line("[ram] no data yet");
+            } else {
+                crate::debug::console_line(&format!("[ram] {text}"));
+            }
+        }
+        "dlc" => {
+            let (listed, on_disk, low_listed, low_rpf) = crate::config::dlc_status();
+            crate::debug::console_line(&format!("[dlc] listed: {}", listed.join(", ")));
+            crate::debug::console_line(&format!("[dlc] on disk: {}", on_disk.join(", ")));
+            crate::debug::console_line(&format!("[dlc] loweyezv: listed={} dlc.rpf={}", if low_listed { "yes" } else { "no" }, if low_rpf { "found" } else { "MISSING" }));
+        }
+        "reload" => {
+            crate::config::muguet_reload_settings();
+            crate::debug::console_line("settings reloaded from the launcher config");
+        }
+        "lowram" => {
+            let ok = crate::config::muguet_apply_low_ram_preset();
+            crate::config::muguet_reload_settings();
+            crate::debug::console_line(&format!("Save RAM preset applied: {}", if ok { "ok" } else { "FAILED" }));
+        }
+        "ultralow" => {
+            let ok = crate::config::muguet_apply_ultra_low_preset();
+            crate::config::muguet_reload_settings();
+            crate::debug::console_line(&format!("Ultra Low preset applied: {}", if ok { "ok" } else { "FAILED" }));
+        }
         "help" => {
-            crate::debug::console_line("commands: spawn <code> — spawn a vehicle | clear — clear the console | close — close the console");
+            crate::debug::console_line("commands:");
+            crate::debug::console_line("  car <code> — spawn any vehicle, mods included (e.g. car loweyezv)");
+            crate::debug::console_line("  spawn <code> — same as car");
+            crate::debug::console_line("  heal — restore health + armor");
+            crate::debug::console_line("  kill — kill the player");
+            crate::debug::console_line("  fix — repair the vehicle you are driving");
+            crate::debug::console_line("  tp <x> <y> <z> — teleport to coordinates");
+            crate::debug::console_line("  coords — print your position + heading");
+            crate::debug::console_line("  weather <name> — EXTRASUNNY CLEAR CLOUDS SMOG FOGGY OVERCAST RAIN THUNDER CLEARING NEUTRAL SNOW BLIZZARD SNOWLIGHT XMAS");
+            crate::debug::console_line("  cheat <CODE> — type a GTA cheat (e.g. cheat TURTLE, cheat LAWYERUP clears wanted)");
+            crate::debug::console_line("  fp — toggle first-person camera");
+            crate::debug::console_line("  ram — show RAM footprint / free memory");
+            crate::debug::console_line("  dlc — show mounted DLC packs + loweyezv status");
+            crate::debug::console_line("  reload — re-apply settings from the launcher");
+            crate::debug::console_line("  lowram — apply Save RAM preset");
+            crate::debug::console_line("  ultralow — apply Ultra Low preset");
+            crate::debug::console_line("  clear — clear the console");
+            crate::debug::console_line("  close — close the console");
         }
         "clear" => crate::debug::clear_console(),
         "close" => {}
@@ -2435,6 +2609,16 @@ fn poll_spawn_request(c: &mut Cmd, game: &mut Game) {
         if let Ok(mut slot) = SPAWN_REQUEST.lock() {
             if let Some(model) = slot.take() {
                 crate::debug::console_line(&format!("[mp] spawn request picked up: {model}"));
+                // Fail fast on an invalid model instead of waiting
+                // 30 s: not in the game files means the DLC is not
+                // mounted (or the code is wrong). If the validation
+                // natives are not wired, model_is_valid returns None
+                // and we fall back to the old wait path.
+                if model_is_valid(c, proto::joaat(&model)) == Some(false) {
+                    crate::debug::console_line(&format!("[mp] car {model}: Invalid vehicle model (not in game files)"));
+                    eprintln!("[mp] spawn request: {model} is not a valid vehicle model; giving up");
+                    return;
+                }
                 if let Ok(mut w) = SPAWN_WAIT_LOG.lock() { *w = (model.clone(), None); }
                 game.pending_spawn = Some((model, Instant::now()));
             }
@@ -2502,6 +2686,9 @@ fn try_spawn_vehicle(c: &mut Cmd, model: u32) -> bool {
     if c.i("IsPedInAnyVehicle", &[i(ped), b(false)]) == 0 {
         c.i("SetPedIntoVehicle", &[i(ped), i(veh), i(-1)]);
     }
+    // FiveM releases the model after spawn; the vehicle itself holds
+    // a reference, so this only drops the streaming request.
+    c.i("SetModelAsNoLongerNeeded", &[i(model as i32)]);
     true
 }
 
@@ -2527,6 +2714,15 @@ fn sandbox_starter_vehicle(c: &mut Cmd, game: &mut Game) {
     // console shows the session line but never this line, the starter
     // never got past its gates (wrong mode / auto-spawn off).
     if game.starter_since.is_none() {
+        // Same fail-fast check as a console spawn: an invalid starter
+        // model means the DLC is not mounted, so say so at once
+        // instead of waiting 30 s.
+        if model_is_valid(c, proto::joaat(&model_name)) == Some(false) {
+            crate::debug::console_line(&format!("[mp] car {model_name}: Invalid vehicle model (not in game files)"));
+            eprintln!("[mp] sandbox starter vehicle: {model_name} is not a valid vehicle model; giving up");
+            game.starter_done = true;
+            return;
+        }
         crate::debug::console_line(&format!("[mp] sandbox starter: waiting for model {model_name}"));
         game.starter_since = Some(Instant::now());
     }
@@ -2549,6 +2745,18 @@ fn sandbox_starter_vehicle(c: &mut Cmd, game: &mut Game) {
         crate::debug::console_line(&format!("[mp] sandbox starter vehicle spawned: {model_name}"));
         eprintln!("[mp] sandbox starter vehicle spawned: {model_name}");
     }
+}
+
+// FiveM-style spawn validation: a model is spawnable only when it
+// is in the game files and is a vehicle. Returns None when either
+// validation native is not wired (patch skipped it) — the caller
+// then falls back to the old wait-for-load path instead of calling
+// every model invalid. A validated model that still never loads is
+// a streaming/DLC problem, not an invalid model.
+fn model_is_valid(c: &mut Cmd, model: u32) -> Option<bool> {
+    let in_cd = c.i_opt("IsModelInCdImage", &[i(model as i32)])?;
+    let is_veh = c.i_opt("IsModelAVehicle", &[i(model as i32)])?;
+    Some(in_cd != 0 && is_veh != 0)
 }
 
 fn model_ready(c: &mut Cmd, model: u32) -> bool {
