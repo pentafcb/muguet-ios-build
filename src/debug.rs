@@ -73,6 +73,24 @@ fn lock_state() -> MutexGuard<'static, State> {
     STATE.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+// RAM tracker: the latest tracker line, written by the GPU thread's
+// check_memory and read by the touch overlay on the event-loop thread
+// (UIKit must only be touched from the main thread, so the label itself
+// is updated in touch::refresh, never from here). The u8 is the memory
+// tier: 0 ok, 1 watch, 2 pressure, 3 critical. Empty text means the
+// game has not started yet.
+static RAM_TRACKER: LazyLock<Mutex<(String, u8)>> = LazyLock::new(|| Mutex::new((String::new(), 0)));
+
+pub fn set_ram_tracker(text: String, tier: u8) {
+    if let Ok(mut slot) = RAM_TRACKER.lock() {
+        *slot = (text, tier);
+    }
+}
+
+pub fn ram_tracker() -> (String, u8) {
+    RAM_TRACKER.lock().map(|slot| slot.clone()).unwrap_or_else(|e| e.into_inner().clone())
+}
+
 fn documents_dir() -> Option<std::path::PathBuf> {
     let home = std::env::var_os("HOME")?;
     let base = std::path::PathBuf::from(home);

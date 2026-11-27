@@ -875,6 +875,7 @@ pub struct Gpu {
     last_memory_check: Instant,
     last_cleanup: Instant,
     pressure_until: Option<Instant>,
+    critical_since: Option<Instant>,
     requested_refresh: u32,
     errors: Arc<AtomicU64>,
 
@@ -1004,7 +1005,7 @@ impl Gpu {
             frame_slot_done: (0..FRAME_SLOTS).map(|_| None).collect(), last_submit: None, vb_avail: [0; 16],
             dbg_idx: if dbg != 0 { dbg + 424 } else { 0 },
             draws: 0, skipped: 0, presents: 0, pipe_creates: 0, fps_t0: Instant::now(), fps_n0: 0, fps_d0: 0,
-            frame_pacer: Default::default(), last_memory_check: Instant::now(), last_cleanup: Instant::now() - Duration::from_secs(60), pressure_until: None,
+            frame_pacer: Default::default(), last_memory_check: Instant::now(), last_cleanup: Instant::now() - Duration::from_secs(60), pressure_until: None, critical_since: None,
             requested_refresh: 0,
             errors, inflight: Arc::new(AtomicU64::new(0)), submits: 0, submits0: 0, passes: 0, passes0: 0,
         })
@@ -3526,30 +3527,51 @@ impl Gpu {
         }
     }
 
+    // RAM tiers for the tracker and the smart cleanup. The jetsam line
+    // is ~2.7 GB footprint on an 8 GB phone (died at 2,701 MB with
+    // available memory at 56 MB), so the tiers act on the footprint,
+    // not only on available memory — available collapses in ~25 s once
+    // streaming starts, too fast to react to. Tier 1 watch (2.0 GB /
+    // 768 MB): purge every 5 s, tracker amber. Tier 2 pressure
+    // (2.3 GB / 384 MB): purge now, 30 FPS for 30 s. Tier 3 critical
+    // (2.55 GB / 192 MB): deepest purge; if the footprint is still
+    // critical 3 s after a purge, stop the game cleanly with a Low
+    // memory message instead of being jetsammed with no warning.
+    fn memory_tier(footprint_mb: u64, avail_mb: u64) -> u8 {
+        if footprint_mb >= 2550 || avail_mb < 192 { 3 }
+        else if footprint_mb >= 2300 || avail_mb < 384 { 2 }
+        else if footprint_mb >= 2000 || avail_mb < 768 { 1 }
+        else { 0 }
+    }
+
     fn check_memory(&mut self) {
         let now = Instant::now();
         if now.duration_since(self.last_memory_check) >= Duration::from_secs(1) {
             self.last_memory_check = now;
-            // Ask for a purge while there is still headroom: the old 192 MB
-            // trigger fired when jetsam was already close.
-            if crate::performance::available_memory().is_some_and(|a| a < 384 << 20) { request_memory_cleanup(); }
+            let fp = crate::footprint_mb();
+            let avail_mb = crate::performance::available_memory().unwrap_or(0) >> 20;
+            let tier = Self::memory_tier(fp, avail_mb);
+            let heap_mb = crate::RT.get().map(|r| (r.mem.data_size() >> 20) as u64).unwrap_or(0);
+            let status = match tier { 3 => " · LOW", 2 => " · CLEANING", _ => "" };
+            crate::debug::set_ram_tracker(format!("RAM {:.1} GB · {} MB free{}", fp as f64 / 1024.0, avail_mb, status), tier);
+            if tier >= 1 { request_memory_cleanup(); }
+            if tier >= 2 { self.pressure_until = Some(now + Duration::from_secs(30)); }
             crate::diagnostics::trim();
-            crate::debug::sample(crate::footprint_mb(), crate::performance::available_memory().unwrap_or(0) >> 20,
-                crate::RT.get().map(|r| (r.mem.data_size() >> 20) as u64).unwrap_or(0), Some(self.counts()));
+            crate::debug::sample(fp, avail_mb, heap_mb, Some(self.counts()));
         }
         // Purge throttle: normally 15 s between purges, because a purge
         // flushes and waits up to 2 s for submitted work. But at ~15 MB/s
         // growth, available memory falls 384 MB -> 0 in ~25 s, so a 15 s
         // throttle allows at most one purge in the whole crash window.
-        // Under 192 MB available the process is seconds from jetsam, so
-        // allow a purge every 5 s instead. A purge only clears host
+        // From tier 1 up the process is on the way to the jetsam line,
+        // so allow a purge every 5 s instead. A purge only clears host
         // caches, never game-owned objects, so an early purge cannot
         // corrupt the game; the 5 s floor stops purge thrash.
         let available = crate::performance::available_memory().unwrap_or(u64::MAX);
-        let critical = available < 192 << 20;
-        let throttle = if critical { 5 } else { 15 };
+        let tier_now = Self::memory_tier(crate::footprint_mb(), available >> 20);
+        let throttle = if tier_now >= 1 { 5 } else { 15 };
         if !crate::performance::MEMORY_PRESSURE.load(Ordering::Relaxed) || now.duration_since(self.last_cleanup) < Duration::from_secs(throttle) { return; }
-        if critical {
+        if tier_now >= 3 {
             log(&format!("memory cleanup: critical purge (available {} MB, {}s since last)", available >> 20, now.duration_since(self.last_cleanup).as_secs()));
         }
         crate::performance::MEMORY_PRESSURE.store(false, Ordering::Relaxed);
@@ -3616,6 +3638,24 @@ impl Gpu {
         let remaining = crate::performance::available_memory().unwrap_or(0) >> 20;
         log(&format!("memory cleanup: {before} -> {after} MB, remaining {remaining} MB; cleared {bg_before} bind groups, {} pipelines, {views_cleared} cached views; temporary 30 FPS limit", pipes_before - self.pipelines.len()));
         crate::debug::sample_forced(after, remaining, crate::RT.get().map(|r| (r.mem.data_size() >> 20) as u64).unwrap_or(0), Some(self.counts()));
+        // Critical tier after a purge: if the footprint is still over
+        // the line 3 s later, the purge is not keeping up and jetsam is
+        // seconds away — stop the game cleanly with a message instead
+        // of being killed with no warning. Cleared below 2.4 GB, the
+        // danger has passed and the timer resets.
+        if Self::memory_tier(after, remaining) >= 3 {
+            match self.critical_since {
+                Some(since) if now.duration_since(since) >= Duration::from_secs(3) => {
+                    log(&format!("memory cleanup: footprint still {after} MB 3 s after purge; stopping the game cleanly instead of waiting for jetsam"));
+                    self.critical_since = None;
+                    crate::app::engine_error("Low memory — the game was stopped before iOS killed it. Reopen Muguet with lower graphics settings.".into());
+                }
+                Some(_) => {}
+                None => { self.critical_since = Some(now); }
+            }
+        } else if after < 2400 {
+            self.critical_since = None;
+        }
     }
 
     fn log_fps(&mut self) {

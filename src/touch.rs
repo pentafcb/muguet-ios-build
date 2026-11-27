@@ -243,6 +243,12 @@ struct Overlay {
     stick_home: (f64, f64),
     loading_label: Retained<AnyObject>,
     network_label: Retained<AnyObject>,
+    // RAM tracker label: added to the window's view, NOT to the overlay
+    // root, because the root is hidden while a controller is connected
+    // and the tracker must stay visible during controller play. The
+    // last text applied, so refresh() skips redundant UIKit updates.
+    ram_label: Retained<AnyObject>,
+    ram_text: String,
     loading: bool,
 
     safe: (f64, f64, f64, f64),
@@ -274,6 +280,10 @@ fn rect(x: f64, y: f64, w: f64, h: f64) -> CGRect {
 
 fn color(white: f64, alpha: f64) -> Retained<AnyObject> {
     unsafe { msg_send![class!(UIColor), colorWithWhite: white, alpha: alpha] }
+}
+
+fn rgb(r: f64, g: f64, b: f64, alpha: f64) -> Retained<AnyObject> {
+    unsafe { msg_send![class!(UIColor), colorWithRed: r, green: g, blue: b, alpha: alpha] }
 }
 
 fn circle(parent: &AnyObject, center: (f64, f64), r: f64, white: f64, alpha: f64) -> Retained<AnyObject> {
@@ -338,7 +348,10 @@ pub fn install(window: &Window) {
     OVERLAY.with(|cell| {
         if let Ok(mut guard) = cell.try_borrow_mut() {
             if let Some(old) = guard.take() {
-                unsafe { let _: () = msg_send![&*old.root, removeFromSuperview]; }
+                unsafe {
+                    let _: () = msg_send![&*old.root, removeFromSuperview];
+                    let _: () = msg_send![&*old.ram_label, removeFromSuperview];
+                }
             }
         }
     });
@@ -381,6 +394,11 @@ pub fn install(window: &Window) {
     let stick_knob = circle(&root, stick_home, knob_radius, 1.0, 0.3);
     let loading_label = label(&root, 150.0);
     let network_label = label(&root, 150.0);
+    // RAM tracker: top-center, just below the network label slot, in
+    // the gap between the top-left and top-right button clusters. It
+    // lives on the window view, not the overlay root, so it stays
+    // visible while a controller is connected (the root hides then).
+    let ram_label = label(view, 150.0);
     unsafe {
         let _: () = msg_send![&*loading_label, setFrame: rect(sx + sw * 0.15, sy + sh * 0.32, sw * 0.7, sh * 0.36)];
         let _: () = msg_send![&*loading_label, setNumberOfLines: 0isize];
@@ -389,11 +407,17 @@ pub fn install(window: &Window) {
         let _: () = msg_send![&*loading_label, setFont: &*font];
         let _: () = msg_send![&*network_label, setFrame: rect(sx + sw * 0.35, sy + 12.0, sw * 0.3, 34.0)];
         let _: () = msg_send![&*network_label, setBackgroundColor: &*color(0.05, 0.65)];
+        let _: () = msg_send![&*ram_label, setFrame: rect(sx + sw * 0.35, sy + 48.0, sw * 0.3, 20.0)];
+        let _: () = msg_send![&*ram_label, setNumberOfLines: 1isize];
+        let _: () = msg_send![&*ram_label, setBackgroundColor: &*color(0.05, 0.65)];
+        let ram_font: Retained<AnyObject> = msg_send![class!(UIFont), systemFontOfSize: 11.0];
+        let _: () = msg_send![&*ram_label, setFont: &*ram_font];
     }
     set_hidden(&loading_label, true);
     set_hidden(&network_label, true);
+    set_hidden(&ram_label, true);
     let mut o = Overlay {
-        root, buttons, stick_base, stick_knob, stick_home, loading_label, network_label, loading: false, safe, scale,
+        root, buttons, stick_base, stick_knob, stick_home, loading_label, network_label, ram_label, ram_text: String::new(), loading: false, safe, scale,
         screen: (full.width, full.height),
         grips: HashMap::new(), held: HashSet::new(), since: HashMap::new(),
         mouse_since: [std::time::Instant::now(); 2], lingering: false, mouse: 0, aim_latched: false,
@@ -803,6 +827,30 @@ pub fn refresh() -> bool {
             set_text(&o.network_label, &status);
             set_hidden(&o.network_label, false);
         } else { set_hidden(&o.network_label, true); }
+        // RAM tracker: the GPU thread writes the latest line into
+        // debug state once a second; this main-thread tick applies it
+        // to the label. Shown only once the game has started, and kept
+        // visible while a controller is connected (the label is not
+        // part of the overlay root, which hides then).
+        if crate::gpu::STARTED.load(std::sync::atomic::Ordering::Relaxed) {
+            let (text, tier) = crate::debug::ram_tracker();
+            if !text.is_empty() {
+                if text != o.ram_text {
+                    o.ram_text = text.clone();
+                    set_text(&o.ram_label, &text);
+                    let (r, g, b) = match tier {
+                        3 => (1.0, 0.3, 0.3),
+                        2 => (1.0, 0.65, 0.2),
+                        1 => (1.0, 0.85, 0.3),
+                        _ => (0.45, 0.95, 0.45),
+                    };
+                    unsafe { let _: () = msg_send![&*o.ram_label, setTextColor: &*rgb(r, g, b, 0.95)]; }
+                }
+                set_hidden(&o.ram_label, false);
+            }
+        } else {
+            set_hidden(&o.ram_label, true);
+        }
 
         input::set_menu_touch(!hide && o.direct_touch());
         if !hide { input::set_locked(!o.direct_touch()); }

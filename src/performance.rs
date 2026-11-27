@@ -66,6 +66,15 @@ pub fn ios_heap_budget(physical: u64, available: Option<u64>, current_heap: u64)
     // On a sideloaded IPA there is no launch env, so the compiled-in
     // IOS_HEAP_MAX above is what the phone uses — and a free build with
     // no increased-memory-limit entitlement jetsams well below it.
+    // The 768 MB reserve inside heap_budget is for Metal, audio and the
+    // OS — but the game's streamed textures live OUTSIDE the heap and
+    // keep growing as the world streams (they were ~320 MB and climbing
+    // when a 2,701 MB footprint jetsammed the process). Cap the heap
+    // against a bigger reserve so heap + streamed textures stay under
+    // the jetsam line: with 3,374 MB available at startup and a 466 MB
+    // minimum heap, this caps the heap at 2,590 MB instead of 3,072 MB.
+    let stream_cap = available.map(|a| current_heap.saturating_add(a.saturating_sub(1250 * MIB))).unwrap_or(u64::MAX);
+    let budget = budget.min(stream_cap);
     match std::env::var("MUGUET_HEAP_GB_MB").ok().and_then(|v| v.parse::<u64>().ok()) {
         Some(mb) if (512..=3072).contains(&mb) => budget.min(mb * MIB).max(current_heap),
         _ => budget,
@@ -102,6 +111,10 @@ mod tests {
         assert_eq!(heap_budget(4 << 30, Some(128 * MIB), 1 << 30), 1 << 30);
         assert_eq!(ios_heap_budget(8 << 30, Some(6 << 30), 1 << 30), 3 << 30);
         assert!(ios_heap_budget(4 << 30, Some(2 << 30), 0) < 3 << 30);
+        // The streamed-texture reserve: 3,374 MB available at startup
+        // with a 466 MB minimum heap caps the heap at 2,590 MB, not
+        // 3,072 MB, leaving room for textures outside the heap.
+        assert_eq!(ios_heap_budget(8 << 30, Some(3374 * MIB), 466 * MIB), 2590 * MIB);
     }
     #[test]
     fn refuses_growth_that_consumes_native_headroom() {
