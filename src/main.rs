@@ -29,6 +29,7 @@ mod performance;
 #[cfg(feature = "jit")]
 mod patch;
 mod proto;
+mod rpf;
 mod server;
 #[cfg(target_os = "ios")]
 mod touch;

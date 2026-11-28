@@ -2436,6 +2436,7 @@ enum ConsoleAction {
     TeleportToWaypoint,
     Coords,
     Weather(String),
+    SpawnInfo(String),
 }
 
 static CONSOLE_ACTIONS: Mutex<Vec<ConsoleAction>> = Mutex::new(Vec::new());
@@ -2447,6 +2448,12 @@ fn queue_console_action(action: ConsoleAction) {
 fn poll_console_actions(c: &mut Cmd) {
     let actions: Vec<ConsoleAction> = CONSOLE_ACTIONS.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
     for action in actions {
+        // SpawnInfo needs no player ped: it validates the model
+        // against the game files and the pack on disk.
+        if let ConsoleAction::SpawnInfo(code) = &action {
+            run_spawn_info(c, code);
+            continue;
+        }
         let ped = c.i("PlayerPedId", &[]);
         if ped == 0 || !c.exists(ped) {
             crate::debug::console_line("console: no player ped yet — try again once the world is loaded");
@@ -2555,6 +2562,60 @@ extern "C" {
     fn muguet_quit_to_launcher();
 }
 
+// `spawninfo <code>`: the conclusive spawn test in one command.
+// Live validation from the game (IsModelInCdImage / IsModelAVehicle /
+// HasModelLoaded), the DLC listing and pack folder from the host, and
+// the RPF inspection of the pack itself — so the answer is one of:
+// the model name inside the rpf differs from the code, the DLC is
+// not mounting inside the game, or the model is registered and the
+// spawn path is the problem. Needs no player ped.
+fn run_spawn_info(c: &mut Cmd, code: &str) {
+    let hash = proto::joaat(code);
+    let in_cd = c.i_opt("IsModelInCdImage", &[i(hash as i32)]);
+    let is_veh = c.i_opt("IsModelAVehicle", &[i(hash as i32)]);
+    let loaded = c.i_opt("HasModelLoaded", &[i(hash as i32)]);
+    let tri = |v: Option<i32>| match v {
+        Some(0) => "no",
+        Some(_) => "yes",
+        None => "n/a",
+    };
+    crate::debug::console_line(&format!("[spawninfo] {code}: in_cdimage={} is_vehicle={} loaded={}",
+        tri(in_cd), tri(is_veh), tri(loaded)));
+    let (listed, on_disk, _, _) = crate::config::dlc_status();
+    let listed_here = listed.iter().any(|n| n.eq_ignore_ascii_case(code));
+    let folder_here = on_disk.iter().any(|n| n.eq_ignore_ascii_case(code));
+    let rpf_path = crate::rpf::mod_rpf_path(code);
+    crate::debug::console_line(&format!("[spawninfo] dlc: listed={} folder={} dlc.rpf={}",
+        if listed_here { "yes" } else { "no" },
+        if folder_here { "yes" } else { "no" },
+        if rpf_path.is_some() { "found" } else { "MISSING" }));
+    let Some(path) = rpf_path else {
+        crate::debug::console_line(&format!("[spawninfo] no pack folder named '{code}' — check the name (see: dlc)"));
+        return;
+    };
+    let report = crate::rpf::inspect_rpf(&path, code);
+    for line in report.summary_lines() {
+        crate::debug::console_line(&line);
+    }
+    if !report.model_names.is_empty() && !report.model_names.iter().any(|m| m.eq_ignore_ascii_case(code)) {
+        crate::debug::console_line(&format!("[spawninfo] the rpf names this model '{}', not '{code}' — spawn with: car {}", report.model_names[0], report.model_names[0]));
+    } else if in_cd == Some(false) {
+        if report.parse_error.is_some() || report.encrypted_toc {
+            crate::debug::console_line("[spawninfo] the model is not in the game files and the pack could not be fully read — see the [rpf] lines above");
+        } else if !report.setup2 || !report.content || report.vehicles_meta.is_none() || !report.meta_in_data_files || report.meta_enabled_by.is_empty() {
+            crate::debug::console_line("[spawninfo] the model is not in the game files and the pack is incomplete — see the [rpf] verdict above");
+        } else {
+            crate::debug::console_line("[spawninfo] the pack looks complete but the model is not in the game files — the DLC is not mounting inside the game");
+        }
+    } else if in_cd == Some(true) && loaded != Some(true) {
+        crate::debug::console_line(&format!("[spawninfo] model is registered but not loaded yet — run: car {code}"));
+    } else if loaded == Some(true) {
+        crate::debug::console_line(&format!("[spawninfo] model is loaded — car {code} should work; if it does not, send the console tail"));
+    } else {
+        crate::debug::console_line("[spawninfo] validation natives not available — fall back to the 30 s wait test (car <code>)");
+    }
+}
+
 // In-game console commands, called from Swift (ConsoleView). The
 // command itself is echoed into the buffer with a "> " prefix, like
 // the FiveM console. "close" is handled on the Swift side (dismiss);
@@ -2636,6 +2697,36 @@ pub extern "C" fn muguet_console_command(code: *const std::ffi::c_char) {
             crate::debug::console_line(&format!("[dlc] listed: {}", listed.join(", ")));
             crate::debug::console_line(&format!("[dlc] on disk: {}", on_disk.join(", ")));
             crate::debug::console_line(&format!("[dlc] loweyezv: listed={} dlc.rpf={}", if low_listed { "yes" } else { "no" }, if low_rpf { "found" } else { "MISSING" }));
+            crate::debug::console_line("tip: rpf loweyezv inspects the pack, spawninfo loweyezv checks the model live");
+        }
+        // Read-only inspection of a mod's dlc.rpf: the true modelName
+        // from vehicles.meta, setup2/content presence, whether a
+        // changeset enables the metadata, and the .yft files. No
+        // natives needed — pure host file I/O.
+        "rpf" => {
+            let Some(mod_name) = parts.next() else {
+                crate::debug::console_line("usage: rpf <mod folder>  (e.g. rpf loweyezv)");
+                return;
+            };
+            match crate::rpf::mod_rpf_path(mod_name) {
+                None => crate::debug::console_line(&format!("[rpf] no dlc.rpf found for '{mod_name}' — check the folder name (see: dlc)")),
+                Some(path) => {
+                    let report = crate::rpf::inspect_rpf(&path, mod_name);
+                    for line in report.lines() {
+                        crate::debug::console_line(&line);
+                    }
+                }
+            }
+        }
+        // Live spawn diagnosis: validation + load state from the
+        // game plus the pack inspection, in one block. Runs on the
+        // script thread (ConsoleAction) because it calls natives.
+        "spawninfo" => {
+            let Some(code) = parts.next() else {
+                crate::debug::console_line("usage: spawninfo <vehicle code>  (e.g. spawninfo loweyezv)");
+                return;
+            };
+            queue_console_action(ConsoleAction::SpawnInfo(code.to_lowercase()));
         }
         "reload" => {
             crate::config::muguet_reload_settings();
@@ -2667,6 +2758,8 @@ pub extern "C" fn muguet_console_command(code: *const std::ffi::c_char) {
             crate::debug::console_line("  fp — toggle first-person camera");
             crate::debug::console_line("  ram — show RAM footprint / free memory");
             crate::debug::console_line("  dlc — show mounted DLC packs + loweyezv status");
+            crate::debug::console_line("  rpf <mod> — inspect a mod's dlc.rpf: true model name, setup2/content, .yft files (e.g. rpf loweyezv)");
+            crate::debug::console_line("  spawninfo <code> — live check: is the model in the game files + loaded, and what the pack says (e.g. spawninfo loweyezv)");
             crate::debug::console_line("  reload — re-apply settings from the launcher");
             crate::debug::console_line("  lowram — apply Save RAM preset");
             crate::debug::console_line("  ultralow — apply Ultra Low preset");

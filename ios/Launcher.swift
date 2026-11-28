@@ -2685,10 +2685,19 @@ public func muguetOpenMenu() {
 // bottom so history can be read. Commands: car/spawn, heal, kill,
 // fix, tp, coords, weather, cheat, fp, ram, dlc, reload, lowram,
 // ultralow, dv, tpm, quit, help, clear, close — see help in the console.
+// The auto-scroll flag lives in a reference type, not a plain @State
+// Bool: an .onChange(of: logText) closure captures the flag from the
+// render pass that created it, so a @State Bool read there can stay
+// stuck on its first value and keep scrolling after the toggle turns
+// it off. Reading the live property through this object at fire time
+// is always current.
+final class ConsoleScrollState: ObservableObject {
+    @Published var autoScroll = true
+}
 struct ConsoleView: View {
     @State private var logText = ""
     @State private var input = ""
-    @State private var autoScroll = true
+    @StateObject private var scrollState = ConsoleScrollState()
     @State private var pollTick = Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()
     var onClose: () -> Void
 
@@ -2703,9 +2712,9 @@ struct ConsoleView: View {
                     HStack {
                         Text("Console").font(.headline)
                         Spacer()
-                        Button(autoScroll ? "Auto-scroll: On" : "Auto-scroll: Off") {
-                            autoScroll.toggle()
-                            if autoScroll { proxy.scrollTo("bottom", anchor: .bottom) }
+                        Button(scrollState.autoScroll ? "Auto-scroll: On" : "Auto-scroll: Off") {
+                            scrollState.autoScroll.toggle()
+                            if scrollState.autoScroll { proxy.scrollTo("bottom", anchor: .bottom) }
                         }
                         .font(.subheadline)
                         Button("Open log") { shareDiagnostics() }
@@ -2725,7 +2734,7 @@ struct ConsoleView: View {
                             .padding(.vertical, 8)
                             .id("bottom")
                             .onChange(of: logText) { _ in
-                                if autoScroll { proxy.scrollTo("bottom", anchor: .bottom) }
+                                if scrollState.autoScroll { proxy.scrollTo("bottom", anchor: .bottom) }
                             }
                     }
                     .background(Color.black.opacity(0.85))

@@ -17,6 +17,7 @@ regex = "1.13.1"
 winit = "0.30.13"
 cpal = "0.18.2"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+flate2 = "1"
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSString"] }
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFCGTypes"] }
