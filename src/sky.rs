@@ -13,11 +13,15 @@
 // (GTAForums North Yankton thread; fivemad timecycle docs).
 //
 // What this port can do, and what it cannot:
-// - It CAN edit the stock timecycle text file on disk, the same way
+// - It CAN edit the stock timecycle text files on disk, the same way
 //   the Mods manager merges metas: backup-once .bak, surgical
 //   replacement, restore on Off, manifest size tolerance in
-//   src/game_data.rs. The engine reads the file at load, so the sky
-//   colour applies on Play (next launch), not live mid-session.
+//   src/game_data.rs. The engine reads the files at load, so the sky
+//   colour applies on Play (next launch), not live mid-session. The
+//   look is painted into EVERY weather file (w_extrasunny, w_clouds,
+//   w_rain, ...), so the colour shows in any weather — the first
+//   version only painted EXTRASUNNY, and the sky stayed stock
+//   whenever the weather was anything else.
 // - It CANNOT author a .ytd (Rockstar texture dictionary), so the
 //   packs' starfield image (the "stars" in the screenshots, painted
 //   into skydome.ytd) cannot be reproduced. The engine's own stars
@@ -26,8 +30,11 @@
 //   SET_TIMECYCLE_MODIFIER_VAR is FiveM-only, not a stock native.
 //   No stock modifier paints a sky pink/black/cyan/purple, so no
 //   modifier natives are wired — a tint would be the wrong look.
-// - No rain is the weather: the look forces EXTRASUNNY persist (the
-//   existing weather native, already wired) — live, no restart.
+// - No rain is the weather: the look forces EXTRASUNNY persist —
+//   live, no restart, but ONLY if this build wires the weather
+//   native (SetWeatherTypeNowPersist). The console probes it once
+//   and says so honestly; if it is missing, rain can still fall
+//   under a pink sky. The colour does not depend on it.
 // - No shadows is settings.xml ShadowQuality 0, forced in
 //   config.rs fix_settings while a look is active — live on Play.
 // - No clouds is the file edit: cloud_opacity 0 where the file has
@@ -174,24 +181,42 @@ pub fn apply_look_to_text(text: &str, look: &str) -> (String, usize, Vec<String>
     (current, total, missing)
 }
 
-// Find the EXTRASUNNY weather file in the timecycle dir, whatever
-// its extension is (the loose layout may store it bare or as .xml).
-// Deterministic: the first match in sorted file-name order.
-pub fn find_timecycle_file(dir: &Path) -> Option<PathBuf> {
+// Find every weather file in the timecycle dir: any file whose name
+// starts with w_ (w_extrasunny, w_clouds, w_rain, ...), whatever its
+// extension. The .bak backups this feature writes start with w_
+// too, so they are excluded — and so are .tmp leftovers from an
+// interrupted atomic write — or a restore would try to paint the
+// backup itself. timecycle_mods_*.xml files are modifiers, not
+// weather files, and do not start with w_. Deterministic: sorted
+// file-name order.
+pub fn find_timecycle_files(dir: &Path) -> Vec<PathBuf> {
     let mut names: Vec<PathBuf> = Vec::new();
     let Ok(entries) = std::fs::read_dir(dir) else {
-        return None;
+        return names;
     };
     for entry in entries.flatten() {
         let path = entry.path();
         let is_file = entry.file_type().map(|t| t.is_file()).unwrap_or(false);
         let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
-        if is_file && name.starts_with("w_extrasunny") {
+        if is_file && name.starts_with("w_") && !name.ends_with(".bak") && !name.ends_with(".tmp") {
             names.push(path);
         }
     }
     names.sort();
-    names.into_iter().next()
+    names
+}
+
+// One weather file's verdict. The console prints only the aggregate
+// message (SkyReport::line()), and the harness asserts on these fields.
+#[allow(dead_code)]
+pub struct FileSkyReport {
+    pub file_name: String,
+    pub replaced: usize,
+    pub missing: Vec<String>,
+    pub restored: bool,
+    pub already_applied: bool,
+    pub skipped: bool,
+    pub error: Option<String>,
 }
 
 // The fields are the structured verdict; the console prints only
@@ -200,9 +225,8 @@ pub fn find_timecycle_file(dir: &Path) -> Option<PathBuf> {
 pub struct SkyReport {
     pub look: String,
     pub found: bool,
-    pub file_name: String,
+    pub files: Vec<FileSkyReport>,
     pub replaced: usize,
-    pub missing: Vec<String>,
     pub restored: bool,
     pub already_applied: bool,
     pub message: String,
@@ -214,18 +238,166 @@ impl SkyReport {
     }
 }
 
-// Full apply/restore against a timecycle dir. Backup-once: the .bak
-// is the pristine stock file and is never overwritten. Applying a
-// look that is already in the file writes nothing. Off restores the
-// stock file from the .bak when it exists.
+// Apply one look to one weather file: backup-once, idempotent, and
+// a file where nothing matches is left untouched (skipped). The .bak
+// is the pristine stock file and is never overwritten — including a
+// file the old single-file version already painted: it compares
+// equal to the new text and reports already-applied, no clobber.
+fn apply_look_to_file(look: &str, file: &Path) -> FileSkyReport {
+    let file_name = file
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let bak = file.with_extension("bak");
+    let Ok(current) = std::fs::read_to_string(file) else {
+        return FileSkyReport {
+            file_name,
+            replaced: 0,
+            missing: Vec::new(),
+            restored: false,
+            already_applied: false,
+            skipped: false,
+            error: Some("unreadable — sky colour not applied".to_string()),
+        };
+    };
+    let (next, replaced, missing) = apply_look_to_text(&current, look);
+    if replaced == 0 {
+        return FileSkyReport {
+            file_name,
+            replaced: 0,
+            missing,
+            restored: false,
+            already_applied: false,
+            skipped: true,
+            error: None,
+        };
+    }
+    if next == current {
+        return FileSkyReport {
+            file_name,
+            replaced,
+            missing,
+            restored: false,
+            already_applied: true,
+            skipped: false,
+            error: None,
+        };
+    }
+    // Only now, when a real write is coming, take the backup —
+    // and only once, so the .bak stays the pristine stock file.
+    if !bak.exists() {
+        let _ = std::fs::copy(file, &bak);
+    }
+    match crate::import::write_atomic(file, next.as_bytes()) {
+        Ok(()) => FileSkyReport {
+            file_name,
+            replaced,
+            missing,
+            restored: false,
+            already_applied: false,
+            skipped: false,
+            error: None,
+        },
+        Err(e) => FileSkyReport {
+            file_name,
+            replaced,
+            missing,
+            restored: false,
+            already_applied: false,
+            skipped: false,
+            error: Some(format!("write failed: {e}")),
+        },
+    }
+}
+
+// Restore one weather file from its .bak. No .bak means the file
+// was never edited, so it is already stock.
+fn restore_file(file: &Path) -> FileSkyReport {
+    let file_name = file
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let bak = file.with_extension("bak");
+    let Ok(current) = std::fs::read_to_string(file) else {
+        return FileSkyReport {
+            file_name,
+            replaced: 0,
+            missing: Vec::new(),
+            restored: false,
+            already_applied: false,
+            skipped: false,
+            error: Some("unreadable — stock file NOT restored".to_string()),
+        };
+    };
+    if !bak.exists() {
+        return FileSkyReport {
+            file_name,
+            replaced: 0,
+            missing: Vec::new(),
+            restored: false,
+            already_applied: true,
+            skipped: false,
+            error: None,
+        };
+    }
+    let Ok(stock) = std::fs::read(&bak) else {
+        return FileSkyReport {
+            file_name,
+            replaced: 0,
+            missing: Vec::new(),
+            restored: false,
+            already_applied: false,
+            skipped: false,
+            error: Some("backup unreadable — stock file NOT restored".to_string()),
+        };
+    };
+    if stock == current.as_bytes() {
+        return FileSkyReport {
+            file_name,
+            replaced: 0,
+            missing: Vec::new(),
+            restored: false,
+            already_applied: true,
+            skipped: false,
+            error: None,
+        };
+    }
+    match crate::import::write_atomic(file, &stock) {
+        Ok(()) => FileSkyReport {
+            file_name,
+            replaced: 0,
+            missing: Vec::new(),
+            restored: true,
+            already_applied: false,
+            skipped: false,
+            error: None,
+        },
+        Err(e) => FileSkyReport {
+            file_name,
+            replaced: 0,
+            missing: Vec::new(),
+            restored: false,
+            already_applied: false,
+            skipped: false,
+            error: Some(format!("restore failed: {e}")),
+        },
+    }
+}
+
+// Full apply/restore against a timecycle dir, across EVERY weather
+// file in it. Backup-once per file: each .bak is the pristine stock
+// file and is never overwritten. Applying a look that is already in
+// a file writes nothing to that file. Off restores every file that
+// has a .bak; files without one are already stock. One file failing
+// (unreadable, write error) never aborts the others — each failure
+// is reported in its own FileSkyReport and in the message.
 pub fn apply_sky_in_dir(look: &str, dir: &Path) -> SkyReport {
     let Some(look) = parse_look(look) else {
         return SkyReport {
             look: look.to_string(),
             found: false,
-            file_name: String::new(),
+            files: Vec::new(),
             replaced: 0,
-            missing: Vec::new(),
             restored: false,
             already_applied: false,
             message: format!("unknown sky look: {look} (try: sky pink|black|cyan|purple|off)"),
@@ -235,166 +407,122 @@ pub fn apply_sky_in_dir(look: &str, dir: &Path) -> SkyReport {
         return SkyReport {
             look: look.to_string(),
             found: false,
-            file_name: String::new(),
+            files: Vec::new(),
             replaced: 0,
-            missing: Vec::new(),
             restored: false,
             already_applied: false,
             message: format!("no timecycle dir at {}", dir.display()),
         };
     }
-    let Some(file) = find_timecycle_file(dir) else {
+    let files = find_timecycle_files(dir);
+    if files.is_empty() {
         return SkyReport {
             look: look.to_string(),
             found: false,
-            file_name: String::new(),
+            files: Vec::new(),
             replaced: 0,
-            missing: Vec::new(),
             restored: false,
             already_applied: false,
-            message: "no w_extrasunny file in the timecycle dir — sky colour not applied"
-                .to_string(),
+            message: "no weather files in the timecycle dir — sky colour not applied".to_string(),
         };
-    };
-    let file_name = file
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let bak = file.with_extension("bak");
-    let Ok(current) = std::fs::read_to_string(&file) else {
+    }
+    if look == "off" {
+        let reports: Vec<FileSkyReport> = files.iter().map(|f| restore_file(f)).collect();
+        let restored_n = reports.iter().filter(|r| r.restored).count();
+        let errors: Vec<String> = reports
+            .iter()
+            .filter_map(|r| r.error.as_ref().map(|e| format!("{}: {e}", r.file_name)))
+            .collect();
+        let all_stock = restored_n == 0 && errors.is_empty();
+        let message = if !errors.is_empty() {
+            format!(
+                "sky off — restore failed for {} file{} ({}); the rest are stock",
+                errors.len(),
+                if errors.len() == 1 { "" } else { "s" },
+                errors.join("; ")
+            )
+        } else if restored_n > 0 {
+            format!(
+                "sky off — stock timecycle restored in {restored_n} file{} (takes effect on next launch)",
+                if restored_n == 1 { "" } else { "s" }
+            )
+        } else {
+            "sky off — stock files already in place (no backups to restore)".to_string()
+        };
         return SkyReport {
             look: look.to_string(),
             found: true,
-            file_name: file_name.clone(),
+            files: reports,
             replaced: 0,
-            missing: Vec::new(),
-            restored: false,
-            already_applied: false,
-            message: format!("{file_name} unreadable — sky colour not applied"),
+            restored: restored_n > 0,
+            already_applied: all_stock,
+            message,
         };
-    };
-    if look == "off" {
-        if !bak.exists() {
-            return SkyReport {
-                look: look.to_string(),
-                found: true,
-                file_name,
-                replaced: 0,
-                missing: Vec::new(),
-                restored: false,
-                already_applied: true,
-                message: "sky off — stock file already in place (no backup to restore)".to_string(),
-            };
-        }
-        let Ok(stock) = std::fs::read(&bak) else {
-            return SkyReport {
-                look: look.to_string(),
-                found: true,
-                file_name,
-                replaced: 0,
-                missing: Vec::new(),
-                restored: false,
-                already_applied: false,
-                message: "sky off — backup unreadable, stock file NOT restored".to_string(),
-            };
-        };
-        if stock == current.as_bytes() {
-            return SkyReport {
-                look: look.to_string(),
-                found: true,
-                file_name,
-                replaced: 0,
-                missing: Vec::new(),
-                restored: false,
-                already_applied: true,
-                message: "sky off — stock file already in place".to_string(),
-            };
-        }
-        match crate::import::write_atomic(&file, &stock) {
-            Ok(()) => SkyReport {
-                look: look.to_string(),
-                found: true,
-                file_name,
-                replaced: 0,
-                missing: Vec::new(),
-                restored: true,
-                already_applied: false,
-                message: "sky off — stock timecycle restored (takes effect on next launch)"
-                    .to_string(),
-            },
-            Err(e) => SkyReport {
-                look: look.to_string(),
-                found: true,
-                file_name,
-                replaced: 0,
-                missing: Vec::new(),
-                restored: false,
-                already_applied: false,
-                message: format!("sky off — restore failed: {e}"),
-            },
-        }
+    }
+    let reports: Vec<FileSkyReport> = files.iter().map(|f| apply_look_to_file(look, f)).collect();
+    let replaced: usize = reports.iter().map(|r| r.replaced).sum();
+    let matched_n = reports.iter().filter(|r| !r.skipped && r.error.is_none()).count();
+    let written_n = reports
+        .iter()
+        .filter(|r| !r.already_applied && !r.skipped && r.error.is_none())
+        .count();
+    let errors: Vec<String> = reports
+        .iter()
+        .filter_map(|r| r.error.as_ref().map(|e| format!("{}: {e}", r.file_name)))
+        .collect();
+    let skipped: Vec<&str> = reports
+        .iter()
+        .filter(|r| r.skipped)
+        .map(|r| r.file_name.as_str())
+        .collect();
+    let message = if !errors.is_empty() {
+        format!(
+            "{look} sky: write failed for {} file{} ({}); {written_n} file{} written",
+            errors.len(),
+            if errors.len() == 1 { "" } else { "s" },
+            errors.join("; "),
+            if written_n == 1 { "" } else { "s" }
+        )
+    } else if replaced == 0 {
+        format!(
+            "{look} sky: no timecycle variables matched in any of {} weather files — file shapes not recognized, nothing written",
+            reports.len()
+        )
+    } else if written_n == 0 {
+        format!("{look} sky already applied ({replaced} values across {matched_n} files) — takes effect on next launch")
     } else {
-        let (next, replaced, missing) = apply_look_to_text(&current, look);
-        if replaced == 0 {
-            return SkyReport {
-                look: look.to_string(),
-                found: true,
-                file_name: file_name.clone(),
-                replaced: 0,
-                missing,
-                restored: false,
-                already_applied: false,
-                message: format!("{look} sky: no timecycle variables matched in {file_name} — file shape not recognized, nothing written"),
-            };
+        let counts: Vec<String> = reports
+            .iter()
+            .filter(|r| !r.skipped && r.error.is_none())
+            .map(|r| format!("{} {}", r.file_name, r.replaced))
+            .collect();
+        let mut message = format!(
+            "{look} sky written ({replaced} values across {} files: {}) — sky colour takes effect on next launch; weather + shadows apply now",
+            counts.len(),
+            counts.join(", ")
+        );
+        let missing_notes: Vec<String> = reports
+            .iter()
+            .filter(|r| !r.missing.is_empty() && !r.skipped)
+            .map(|r| format!("{}: no {}", r.file_name, r.missing.join(", ")))
+            .collect();
+        if !missing_notes.is_empty() {
+            message.push_str(&format!(" (not in file: {})", missing_notes.join("; ")));
         }
-        if next == current {
-            return SkyReport {
-                look: look.to_string(),
-                found: true,
-                file_name,
-                replaced,
-                missing,
-                restored: false,
-                already_applied: true,
-                message: format!(
-                    "{look} sky already applied ({replaced} values) — takes effect on next launch"
-                ),
-            };
+        if !skipped.is_empty() {
+            message.push_str(&format!(" (skipped, no variables matched: {})", skipped.join(", ")));
         }
-        // Only now, when a real write is coming, take the backup —
-        // and only once, so the .bak stays the pristine stock file.
-        if !bak.exists() {
-            let _ = std::fs::copy(&file, &bak);
-        }
-        match crate::import::write_atomic(&file, next.as_bytes()) {
-            Ok(()) => {
-                let missing_note = if missing.is_empty() {
-                    String::new()
-                } else {
-                    format!(" (not in file: {})", missing.join(", "))
-                };
-                SkyReport {
-                    look: look.to_string(),
-                    found: true,
-                    file_name,
-                    replaced,
-                    missing,
-                    restored: false,
-                    already_applied: false,
-                    message: format!("{look} sky written ({replaced} values) — sky colour takes effect on next launch; weather + shadows apply now{missing_note}"),
-                }
-            }
-            Err(e) => SkyReport {
-                look: look.to_string(),
-                found: true,
-                file_name,
-                replaced,
-                missing,
-                restored: false,
-                already_applied: false,
-                message: format!("{look} sky: write failed: {e}"),
-            },
-        }
+        message
+    };
+    let all_applied = written_n == 0 && replaced > 0 && errors.is_empty();
+    SkyReport {
+        look: look.to_string(),
+        found: true,
+        files: reports,
+        replaced,
+        restored: false,
+        already_applied: all_applied,
+        message,
     }
 }
 

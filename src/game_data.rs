@@ -151,8 +151,8 @@ pub fn load_manifest_with_progress(data: &Path, mut progress: impl FnMut(usize, 
         let merged_carvariations_meta =
             name.eq_ignore_ascii_case("common/data/carvariations.meta");
         let merged_carcols_meta = name.eq_ignore_ascii_case("common/data/carcols.meta");
-        // The Sky Pack edits the EXTRASUNNY timecycle file the same
-        // way (sky colour), so its size changes past the manifest too.
+        // The Sky Pack edits every weather timecycle file the same
+        // way (sky colour), so their sizes change past the manifest too.
         let sky_timecycle = crate::sky::is_sky_timecycle_file(&name);
         if metadata.len() != size {
             anyhow::ensure!(optional_web_document(&name) || trimmed_dlc || merged_vehicles_meta || merged_handling_meta || merged_carvariations_meta || merged_carcols_meta || sky_timecycle,

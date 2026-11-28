@@ -2475,6 +2475,11 @@ static NO_TRAFFIC: AtomicBool = AtomicBool::new(false);
 // (the wasm never exported it), so the phone itself reports the
 // verdict on the console instead of us guessing.
 static TRAFFIC_PROBED: AtomicBool = AtomicBool::new(false);
+// Same probe, for the weather native (SetWeatherTypeNowPersist):
+// the old Weather action printed "weather: X" even when the native
+// was missing and nothing changed. Reset at session start in
+// sync_sky_from_env, probed once in the Weather action.
+static WEATHER_PROBED: AtomicBool = AtomicBool::new(false);
 
 // Pure decision for the notraffic console argument: no argument
 // toggles, "on"/"off" set explicitly, anything else is a usage
@@ -2503,8 +2508,14 @@ fn sync_no_traffic_from_env() {
 
 // Sky Pack built-in mod: a look chosen in the launcher forces
 // EXTRASUNNY (no rain) from session start. The sky colour itself
-// was written into the timecycle file at startup by config.rs.
+// was written into EVERY weather timecycle file at startup by
+// config.rs, so the colour shows in any weather — the force here
+// only covers the no-rain part of the look.
 fn sync_sky_from_env() {
+    // The weather probe (see the Weather action) reports once per
+    // session, so reset it here whether or not a look is active:
+    // the `weather` console command uses the same probe.
+    WEATHER_PROBED.store(false, Ordering::Relaxed);
     if crate::sky::env_look().map(|v| crate::sky::sky_active(&v)).unwrap_or(false) {
         queue_console_action(ConsoleAction::Weather("EXTRASUNNY".to_string()));
     }
@@ -2642,8 +2653,25 @@ fn poll_console_actions(c: &mut Cmd) {
             }
             ConsoleAction::Weather(name) => {
                 c.c_str(S_NAME, &name);
-                c.i("SetWeatherTypeNowPersist", &[c.ptr(S_NAME)]);
-                crate::debug::console_line(&format!("weather: {name}"));
+                // Probe SetWeatherTypeNowPersist once: c.i() returns 0
+                // silently when the native is not wired, so a plain
+                // call can never say whether the weather actually
+                // changed — the old "weather: X" line printed even
+                // when nothing happened. i_opt returns None when the
+                // native is missing, and the call itself IS the
+                // weather change when it is wired (a void native
+                // reports Some(0) through call(), like DeleteVehicle).
+                let wired = c.i_opt("SetWeatherTypeNowPersist", &[c.ptr(S_NAME)]);
+                if !WEATHER_PROBED.swap(true, Ordering::Relaxed) {
+                    match wired {
+                        Some(_) => crate::debug::console_line("[weather] SetWeatherTypeNowPersist wired — weather changes apply"),
+                        None => crate::debug::console_line("[weather] SetWeatherTypeNowPersist NOT in this build — the weather never changes; the sky colour still shows, it is painted into every weather file, not just EXTRASUNNY (rain can still fall under a pink sky)"),
+                    }
+                }
+                match wired {
+                    Some(_) => crate::debug::console_line(&format!("weather: {name}")),
+                    None => crate::debug::console_line(&format!("weather: {name} NOT applied — weather native missing in this build")),
+                }
             }
             // SpawnInfo is handled above (it needs no ped); this arm
             // only exists so the match stays exhaustive.
@@ -2771,12 +2799,15 @@ pub extern "C" fn muguet_console_command(code: *const std::ffi::c_char) {
             }
         }
         "sky" => {
-            // Sky Pack built-in mod: switch the look. The weather
-            // (no rain) and the shadows (off from this launch) apply
-            // now; the sky colour is a timecycle file edit and takes
-            // effect on the next launch — and the launcher picker
-            // wins on the next Play, so set the same look there to
-            // keep it (same rule as the notraffic console toggle).
+            // Sky Pack built-in mod: switch the look. The shadows
+            // (off from this launch) apply now and the weather force
+            // (no rain) is requested now — it only lands if this
+            // build wires the weather native, and the [weather] line
+            // says so honestly. The sky colour is a timecycle file
+            // edit across every weather file and takes effect on the
+            // next launch — and the launcher picker wins on the next
+            // Play, so set the same look there to keep it (same rule
+            // as the notraffic console toggle).
             let Some(arg) = parts.next() else {
                 let current = crate::sky::env_look().unwrap_or_else(|| "off".into());
                 crate::debug::console_line(&format!("sky: {current} (pink|black|cyan|purple|off) — sky colour takes effect on next launch; weather + shadows apply now"));
@@ -2790,7 +2821,7 @@ pub extern "C" fn muguet_console_command(code: *const std::ffi::c_char) {
             crate::debug::console_line(&report.line());
             if crate::sky::sky_active(look) {
                 queue_console_action(ConsoleAction::Weather("EXTRASUNNY".to_string()));
-                crate::debug::console_line("sky: weather EXTRASUNNY now (no rain) — set the same look in the launcher picker or the next Play restores the stock sky");
+                crate::debug::console_line("sky: weather EXTRASUNNY requested (no rain) — see the [weather] line for whether this build can change the weather; set the same look in the launcher picker or the next Play restores the stock sky");
             }
         }
         "stretch" => {
