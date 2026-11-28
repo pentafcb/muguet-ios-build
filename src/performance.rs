@@ -3,7 +3,15 @@ use std::time::{Duration, Instant};
 
 pub const MIB: u64 = 1 << 20;
 pub const HEAP_CEILING: u64 = 16 << 30;
-pub const IOS_HEAP_MAX: u64 = 3072 * MIB;
+// 4 GB, not 3: with the increased-memory-limit entitlement the
+// phone has the headroom (8 GB physical, ~6 GB available at
+// startup), and the 3 GB cap starved the streamer on a full-city
+// tour — heap growth was refused at 3,088 MB requested with
+// 2,629 MB available, so the streamer got NULL destinations and
+// the game aborted. The safety rails still apply below
+// (device_budget 65%, the 1,250 MB stream reserve, the avail
+// tiers), so this is a ceiling, not a target.
+pub const IOS_HEAP_MAX: u64 = 4096 * MIB;
 pub static MEMORY_PRESSURE: AtomicBool = AtomicBool::new(false);
 static FRAME_LIMIT: AtomicU32 = AtomicU32::new(60);
 static PROMOTION_SYNC: AtomicBool = AtomicBool::new(false);
@@ -76,7 +84,7 @@ pub fn ios_heap_budget(physical: u64, available: Option<u64>, current_heap: u64)
     // The old make-ios.sh HEAP_GB / MUGUET_IOS_HEAP_GB knob was never
     // read by any code, so "8 GB paid vs 5 GB free" did nothing. This
     // is the knob that actually works: a runtime env override, validated
-    // and clamped to 512 MB..3 GB (non-finite/garbage values ignored).
+    // and clamped to 512 MB..4 GB (non-finite/garbage values ignored).
     // On a sideloaded IPA there is no launch env, so the compiled-in
     // IOS_HEAP_MAX above is what the phone uses — and a free build with
     // no increased-memory-limit entitlement jetsams well below it.
@@ -86,11 +94,11 @@ pub fn ios_heap_budget(physical: u64, available: Option<u64>, current_heap: u64)
     // when a 2,701 MB footprint jetsammed the process). Cap the heap
     // against a bigger reserve so heap + streamed textures stay under
     // the jetsam line: with 3,374 MB available at startup and a 466 MB
-    // minimum heap, this caps the heap at 2,590 MB instead of 3,072 MB.
+    // minimum heap, this caps the heap at 2,590 MB instead of 4,096 MB.
     let stream_cap = available.map(|a| current_heap.saturating_add(a.saturating_sub(1250 * MIB))).unwrap_or(u64::MAX);
     let budget = budget.min(stream_cap);
     match std::env::var("MUGUET_HEAP_GB_MB").ok().and_then(|v| v.parse::<u64>().ok()) {
-        Some(mb) if (512..=3072).contains(&mb) => budget.min(mb * MIB).max(current_heap),
+        Some(mb) if (512..=4096).contains(&mb) => budget.min(mb * MIB).max(current_heap),
         _ => budget,
     }
 }
@@ -123,7 +131,7 @@ mod tests {
         assert!(heap_budget(8 << 30, Some(6 << 30), 0) < 6 << 30);
         assert_eq!(heap_budget(32 << 30, Some(24 << 30), 0), HEAP_CEILING);
         assert_eq!(heap_budget(4 << 30, Some(128 * MIB), 1 << 30), 1 << 30);
-        assert_eq!(ios_heap_budget(8 << 30, Some(6 << 30), 1 << 30), 3 << 30);
+        assert_eq!(ios_heap_budget(8 << 30, Some(6 << 30), 1 << 30), 4 << 30);
         assert!(ios_heap_budget(4 << 30, Some(2 << 30), 0) < 3 << 30);
         // The streamed-texture reserve: 3,374 MB available at startup
         // with a 466 MB minimum heap caps the heap at 2,590 MB, not
