@@ -36,6 +36,53 @@ pub fn load_manifest(data: &Path) -> Result<Value> {
     load_manifest_with_progress(data, |_, _| {})
 }
 
+// Manifest record for one installed mod pack: ("x64/dlcPacks/<name>/dlc.rpf", size).
+// None when the folder is a stock pack, has no readable dlc.rpf, is
+// already listed in the manifest, or has an unsafe name. The record
+// shape is exactly the shape every other manifest record has and the
+// shape the consumers read: [name, size] — runtime_files takes
+// record.get(0) as the path and record.get(1) as the size, and the
+// engine is handed these same bytes by httpfs_manifest.
+fn mod_pack_record(data: &Path, folder: &str, existing: &[String]) -> Option<(String, u64)> {
+    if folder.is_empty() || folder == "." || folder == ".." || folder.contains('/') || folder.contains('\\') {
+        return None;
+    }
+    if crate::mods::is_stock(folder) {
+        return None;
+    }
+    let name = format!("x64/dlcPacks/{folder}/dlc.rpf");
+    if existing.iter().any(|e| e.eq_ignore_ascii_case(&name)) {
+        return None;
+    }
+    let metadata = std::fs::metadata(data.join("x64").join("dlcPacks").join(folder).join("dlc.rpf")).ok()?;
+    if !metadata.is_file() || metadata.len() == 0 {
+        return None;
+    }
+    Some((name, metadata.len()))
+}
+
+// The (name, size) pairs to append to the runtime manifest, one per
+// installed mod pack. A pack is listed only when its dlc.rpf is
+// present and readable; stock packs are skipped. `existing` is the
+// list of names already in the manifest, and names accepted here are
+// added to it as we go, so two folders differing only by case cannot
+// produce duplicate records.
+fn mod_pack_records(data: &Path, existing: &[String]) -> Vec<(String, u64)> {
+    let mut seen: Vec<String> = existing.to_vec();
+    let Ok(entries) = std::fs::read_dir(data.join("x64").join("dlcPacks")) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let Ok(folder) = entry.file_name().into_string() else { continue };
+        if let Some((name, size)) = mod_pack_record(data, &folder, &seen) {
+            seen.push(name.clone());
+            out.push((name, size));
+        }
+    }
+    out
+}
+
 pub fn load_manifest_with_progress(data: &Path, mut progress: impl FnMut(usize, usize)) -> Result<Value> {
     let path = data.join("manifest.json");
     anyhow::ensure!(std::fs::metadata(&path)?.len() <= 64 << 20, "Game manifest is too large");
@@ -92,8 +139,11 @@ pub fn load_manifest_with_progress(data: &Path, mut progress: impl FnMut(usize, 
         let merged_carvariations_meta =
             name.eq_ignore_ascii_case("common/data/carvariations.meta");
         let merged_carcols_meta = name.eq_ignore_ascii_case("common/data/carcols.meta");
+        // The Sky Pack edits the EXTRASUNNY timecycle file the same
+        // way (sky colour), so its size changes past the manifest too.
+        let sky_timecycle = crate::sky::is_sky_timecycle_file(&name);
         if metadata.len() != size {
-            anyhow::ensure!(optional_web_document(&name) || trimmed_dlc || merged_vehicles_meta || merged_handling_meta || merged_carvariations_meta || merged_carcols_meta,
+            anyhow::ensure!(optional_web_document(&name) || trimmed_dlc || merged_vehicles_meta || merged_handling_meta || merged_carvariations_meta || merged_carcols_meta || sky_timecycle,
                 "Game data incomplete: {name} (expected {size} bytes, found {} bytes). Import the complete game.zip again", metadata.len());
             record[1] = Value::from(metadata.len());
             adjusted += 1;
@@ -107,7 +157,27 @@ pub fn load_manifest_with_progress(data: &Path, mut progress: impl FnMut(usize, 
     }
     anyhow::ensure!(!kept.is_empty(), "Game data contains no runtime files. Import a complete compatible game.zip");
     *files = kept;
+    // Mod packs installed after import are on disk and in dlcList.xml
+    // but were never added to manifest.json, so the engine has no ID
+    // to open their dlc.rpf with: io.rs serves reads by numeric
+    // manifest ID (files.get(id)) and fs.rs hands the engine these
+    // same manifest bytes, so an unlisted pack is unreachable even
+    // though its folder exists. Append one record per installed pack,
+    // with its real on-disk size, to the in-memory snapshot only —
+    // manifest.json on disk is never rewritten here. (At import time
+    // tidy_lists runs this same loader on a fresh stock extraction,
+    // which has no mod packs, so nothing is injected there either.)
+    let existing: Vec<String> = files
+        .iter()
+        .filter_map(|r| r.get(0).and_then(Value::as_str).map(str::to_owned))
+        .collect();
+    let records = mod_pack_records(data, &existing);
+    let injected = records.len();
+    for (name, size) in records {
+        files.push(Value::from(vec![Value::from(name), Value::from(size)]));
+    }
     progress(total, total);
     if adjusted != 0 { eprintln!("[config] reconciled {adjusted} optional or modified manifest entries"); }
+    if injected != 0 { eprintln!("[config] added {injected} mod dlc.rpf entries to the runtime manifest"); }
     Ok(manifest)
 }

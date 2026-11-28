@@ -255,7 +255,10 @@ const SETTING_VARS: &[&str] = &[
     "MUGUET_SANDBOX_VEHICLE", "MUGUET_SANDBOX_VEHICLES", "MUGUET_MAX_PLAYERS",
     // No Traffic / No Peds built-in mod: same reload hazard — the
     // launcher toggle must be re-read from config.json on Play.
-    "MUGUET_NO_TRAFFIC"
+    "MUGUET_NO_TRAFFIC",
+    // Sky Pack built-in mod: same reload hazard — the launcher picker
+    // must be re-read from config.json on Play.
+    "MUGUET_SKY"
 ];
 
 #[no_mangle]
@@ -377,6 +380,15 @@ fn settings(cfg_path: &Path) -> Vec<String> {
     let no_traffic = no_traffic_enabled(cfg.get("no_traffic").and_then(|v| v.as_bool()).unwrap_or(false), flag("multiplayer"));
     if no_traffic { set_default("MUGUET_NO_TRAFFIC", "1"); }
 
+    // Sky Pack built-in mod: the launcher picker chooses a FiveM PvP
+    // sky look. The file edit runs here at startup, before the engine
+    // loads the timecycle files, and the env flag tells the script
+    // thread to force EXTRASUNNY. Default Off.
+    let sky_look = crate::sky::parse_look(cfg.get("sky").and_then(|v| v.as_str()).unwrap_or("off")).unwrap_or("off");
+    let sky_on = crate::sky::sky_active(sky_look);
+    if sky_on { set_default("MUGUET_SKY", sky_look); }
+    crate::debug::console_line(&crate::sky::apply_sky(sky_look).line());
+
     // NaN/inf used to flow through unchecked: NaN as i64 is 0 (clamped
     // to mode 2 only by accident) and fps=inf/1e9 reached the frame
     // limiter unvalidated. Filter non-finite values and clamp.
@@ -402,7 +414,7 @@ fn settings(cfg_path: &Path) -> Vec<String> {
     }
     let gfx = CustomGraphics {
         texture_quality: num("texture_quality").map(|q| q as i64),
-        shadow_quality: num("shadow_quality").map(|q| q as i64).unwrap_or(1),
+        shadow_quality: if sky_on { 0 } else { num("shadow_quality").map(|q| q as i64).unwrap_or(1) },
         shadow_distance: num("shadow_distance").unwrap_or(1.0),
         reflection_quality: num("reflection_quality").map(|q| q as i64).unwrap_or(1),
         grass_quality: num("grass_quality").map(|q| q as i64).unwrap_or(0),
@@ -416,6 +428,7 @@ fn settings(cfg_path: &Path) -> Vec<String> {
         distance_scaling: num("distance_scaling").unwrap_or(0.0),
         deep_optimization,
         ultra_low,
+        sky_active: sky_on,
     };
     // Graphics preset evidence for the in-game console: what the
     // launcher asked for, so a black screen can be read against the
@@ -687,6 +700,7 @@ pub struct CustomGraphics {
     pub distance_scaling: f64,
     pub deep_optimization: bool,
     pub ultra_low: bool,
+    pub sky_active: bool,
 }
 
 fn set_num(new: &mut String, tag: &str, fix: impl Fn(i64) -> i64) {
@@ -791,6 +805,12 @@ fn fix_settings(gfx: CustomGraphics) {
             set_num(&mut new, "WaterQuality", |_| gfx.water_quality.clamp(0, 2));
             set_num(&mut new, "ParticleQuality", |_| gfx.particle_quality.clamp(0, 2));
             set_num(&mut new, "PostFX", |_| gfx.postfx.clamp(0, 2));
+        }
+
+        // Sky Pack: a look is active — the packs are NO SHADOWS, so
+        // ShadowQuality is forced 0 whatever the preset branch wrote.
+        if gfx.sky_active {
+            set_num(&mut new, "ShadowQuality", |_| 0);
         }
 
         set_float(&mut new, "Shadow_Distance", gfx.shadow_distance.clamp(0.5, 2.0));

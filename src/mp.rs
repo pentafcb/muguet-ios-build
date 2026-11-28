@@ -1200,6 +1200,11 @@ pub fn script_tick(caller: &mut Caller<'_, HostState>, thread: u64, tls: u64) ->
             // launcher setting, so a change applies on the next Play
             // without a force-quit.
             sync_no_traffic_from_env();
+            // Same for the Sky Pack: a look chosen in the launcher
+            // forces EXTRASUNNY (no rain) from session start. The
+            // sky colour itself was written into the timecycle file
+            // at startup by config.rs.
+            sync_sky_from_env();
             // Taken keys are (owner, key): the old owner is gone, and
             // a stale key permanently blocks mirroring a later car
             // that reuses the same entity handle.
@@ -2492,6 +2497,15 @@ fn sync_no_traffic_from_env() {
     TRAFFIC_PROBED.store(false, Ordering::Relaxed);
 }
 
+// Sky Pack built-in mod: a look chosen in the launcher forces
+// EXTRASUNNY (no rain) from session start. The sky colour itself
+// was written into the timecycle file at startup by config.rs.
+fn sync_sky_from_env() {
+    if crate::sky::env_look().map(|v| crate::sky::sky_active(&v)).unwrap_or(false) {
+        queue_console_action(ConsoleAction::Weather("EXTRASUNNY".to_string()));
+    }
+}
+
 fn apply_no_traffic(c: &mut Cmd) {
     if !NO_TRAFFIC.load(Ordering::Relaxed) {
         return;
@@ -2752,6 +2766,29 @@ pub extern "C" fn muguet_console_command(code: *const std::ffi::c_char) {
                 crate::debug::console_line(&format!("unknown weather: {name} (try: help)"));
             }
         }
+        "sky" => {
+            // Sky Pack built-in mod: switch the look. The weather
+            // (no rain) and the shadows (off from this launch) apply
+            // now; the sky colour is a timecycle file edit and takes
+            // effect on the next launch — and the launcher picker
+            // wins on the next Play, so set the same look there to
+            // keep it (same rule as the notraffic console toggle).
+            let Some(arg) = parts.next() else {
+                let current = crate::sky::env_look().unwrap_or_else(|| "off".into());
+                crate::debug::console_line(&format!("sky: {current} (pink|black|cyan|purple|off) — sky colour takes effect on next launch; weather + shadows apply now"));
+                return;
+            };
+            let Some(look) = crate::sky::parse_look(arg) else {
+                crate::debug::console_line(&format!("unknown sky look: {arg} (try: sky pink|black|cyan|purple|off)"));
+                return;
+            };
+            let report = crate::sky::apply_sky(look);
+            crate::debug::console_line(&report.line());
+            if crate::sky::sky_active(look) {
+                queue_console_action(ConsoleAction::Weather("EXTRASUNNY".to_string()));
+                crate::debug::console_line("sky: weather EXTRASUNNY now (no rain) — set the same look in the launcher picker or the next Play restores the stock sky");
+            }
+        }
         "cheat" => {
             let Some(code) = parts.next() else {
                 crate::debug::console_line("usage: cheat <CODE>  (e.g. cheat TURTLE, cheat LAWYERUP)");
@@ -2867,6 +2904,7 @@ pub extern "C" fn muguet_console_command(code: *const std::ffi::c_char) {
             crate::debug::console_line("  cheat <CODE> — type a GTA cheat (e.g. cheat TURTLE, cheat LAWYERUP clears wanted)");
             crate::debug::console_line("  fp — toggle first-person camera");
             crate::debug::console_line("  notraffic [on|off] — no traffic cars, no peds, no parked cars (single-player; toggles live)");
+            crate::debug::console_line("  sky <pink|black|cyan|purple|off> — FiveM PvP sky pack: sky colour + no clouds + no rain + no shadows (colour needs a restart; set it in the launcher picker to keep it)");
             crate::debug::console_line("  ram — show RAM footprint / free memory");
             crate::debug::console_line("  dlc — show mounted DLC packs + loweyezv status");
             crate::debug::console_line("  rpf <mod> — inspect a mod's dlc.rpf: true model name, setup2/content, .yft files (e.g. rpf loweyezv)");

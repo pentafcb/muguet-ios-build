@@ -54,6 +54,7 @@ final class Settings: ObservableObject {
     @Published var cityDensity = 0.5 // 0.0: Empty, 0.5: Medium, 1.0: Dense
     @Published var pedDensity = 0.5 // 0.0: Low, 0.5: Medium, 1.0: High
     @Published var noTraffic = false // built-in mod: no traffic cars, no peds, no parked cars (single-player)
+    @Published var sky = "off" // built-in mod: FiveM PvP sky pack (pink/black/cyan/purple), default off
     @Published var distanceScaling = 0.0 // -0.5: Potato, 0.0: Normal, 0.5: Extended
 
     @Published var buttonScale = 1.0
@@ -221,6 +222,7 @@ final class Settings: ObservableObject {
         if let v = json["city_density"] as? Double { cityDensity = max(0.0, min(1.0, v)) }
         if let v = json["ped_density"] as? Double { pedDensity = max(0.0, min(1.0, v)) }
         if let v = json["no_traffic"] as? Bool { noTraffic = v }
+        if let v = json["sky"] as? String, ["off", "pink", "black", "cyan", "purple"].contains(v) { sky = v }
         if let v = json["distance_scaling"] as? Double { distanceScaling = max(-0.5, min(1.0, v)) }
         if let v = json["button_scale"] as? Double { buttonScale = max(0.6, min(2.0, v)) }
         if let v = json["button_offset_x"] as? Double { buttonOffsetX = max(-150.0, min(150.0, v)) }
@@ -326,6 +328,7 @@ final class Settings: ObservableObject {
         json["city_density"] = cityDensity
         json["ped_density"] = pedDensity
         json["no_traffic"] = noTraffic
+        json["sky"] = sky
         json["distance_scaling"] = distanceScaling
         json["touch_sensitivity"] = (touch * 100).rounded() / 100
         json["aim_sensitivity"] = (aimSensitivity * 100).rounded() / 100
@@ -2266,6 +2269,15 @@ struct CLSettingsPanel: View {
                     ])
                     CLToggle(title: "No Traffic / No Peds", isOn: $s.noTraffic)
                     Text("Built-in mod: no traffic cars, no peds, no parked cars. Stronger than the Empty chip — zeroes spawning every frame. Single-player only; also toggles live in the console with notraffic.")
+                        .font(.system(size: 10)).foregroundColor(muguetMuted).fixedSize(horizontal: false, vertical: true)
+                    CLChipPicker(label: "Sky Pack (built-in visuals)", selection: $s.sky, options: [
+                        ("Off", "off"),
+                        ("Pink Sky", "pink"),
+                        ("Black Sky", "black"),
+                        ("Cyan Sky", "cyan"),
+                        ("Purple Sky", "purple")
+                    ])
+                    Text("Built-in mod: FiveM PvP sky pack — pink, black, cyan or purple sky, no clouds, no rain, no shadows. Applies on Play (the sky colour needs a restart to change); also switches in the console with sky <pink|black|cyan|purple|off>. No painted starfield — the packs' stars live in a texture this port cannot author; the engine's own stars still show at night on Black.")
                         .font(.system(size: 10)).foregroundColor(muguetMuted).fixedSize(horizontal: false, vertical: true)
                     CLChipPicker(label: "Draw Distance & LOD Scale", selection: $s.distanceScaling, options: [
                         ("Save RAM (-0.5)", -0.5),
