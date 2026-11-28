@@ -137,6 +137,23 @@ pub extern "C" fn muguet_console_tail() -> *const std::ffi::c_char {
     }
 }
 
+// The live RAM tracker line as a C string for Swift, same
+// static-slot pattern. The tracker never logs to the console, so
+// Swift cannot grep the tail for it — the home RAM card did exactly
+// that and always showed "—". Empty when the game has not started
+// yet; Swift shows "—" for that.
+static RAM_TRACKER_C: LazyLock<Mutex<std::ffi::CString>> = LazyLock::new(|| Mutex::new(std::ffi::CString::new("").unwrap()));
+#[no_mangle]
+pub extern "C" fn muguet_ram_tracker_text() -> *const std::ffi::c_char {
+    let (text, _) = ram_tracker();
+    if let Ok(mut slot) = RAM_TRACKER_C.lock() {
+        if let Ok(c) = std::ffi::CString::new(text) { *slot = c; }
+        slot.as_ptr()
+    } else {
+        std::ptr::null()
+    }
+}
+
 fn documents_dir() -> Option<std::path::PathBuf> {
     let home = std::env::var_os("HOME")?;
     let base = std::path::PathBuf::from(home);

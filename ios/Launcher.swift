@@ -391,6 +391,8 @@ func muguet_apply_cheat(_ code: UnsafePointer<CChar>)
 func muguet_spawn_vehicle(_ code: UnsafePointer<CChar>)
 @_silgen_name("muguet_console_tail")
 func muguet_console_tail() -> UnsafePointer<CChar>?
+@_silgen_name("muguet_ram_tracker_text")
+func muguet_ram_tracker_text() -> UnsafePointer<CChar>?
 @_silgen_name("muguet_console_command")
 func muguet_console_command(_ code: UnsafePointer<CChar>)
 @_silgen_name("muguet_is_multiplayer")
@@ -1434,7 +1436,6 @@ private let muguetGreen = Color(hex: "3ddc58")
 private let muguetAmber = Color(hex: "ffb020")
 private let muguetRed = Color(hex: "ff4d4d")
 private let muguetGold = Color(hex: "f5c518")
-private let muguetTeal = Color(hex: "2dd4bf")
 
 /// App version/build read from Info.plist at runtime — never hardcoded.
 private var appVersionShort: String {
@@ -1451,14 +1452,20 @@ private var appVersionCompact: String { "\(appVersionShort) (B\(appBuildNumber))
 private let upstreamBuild = "8.9"
 
 /// The 11 stock packs, in the web design's order (same set as stockPacks / Rust STOCK_PACKS).
-private let stockPackList: [String] = ["mpbeach", "mpbusiness", "mpbusiness2", "mpchristmas", "mphipster", "mpindependence", "mplts", "mppilot", "mpvalentines", "spupgrade", "verityradio"]
+/// Derived from stockPacks so the two lists can never drift apart.
+private let stockPackList: [String] = stockPacks.sorted()
 
 /// Full console command list from the web design (see help in the console).
 private let consoleCommands: [String] = ["car <code>", "spawn <code>", "heal", "kill", "fix", "dv", "tpm", "tp <x> <y> <z>", "coords", "weather", "cheat <CODE>", "fp", "ram", "dlc", "rpf <mod>", "spawninfo <code>", "reload", "lowram", "ultralow", "quit", "clear", "close"]
 
 /// Current preset name from live settings, for the drawer chip and home card.
+/// Rockstar defaults share fps 120 / scale 0.5 with 120 FPS, so test
+/// its full signature first — otherwise the 120 FPS button lights up
+/// pink after applying Rockstar defaults and the Rockstar row can
+/// never show ACTIVE.
 private func currentPresetName(_ s: Settings) -> String {
     if s.ultraLow { return "ULTRA LOW" }
+    if s.fps == 120 && s.shadowDistance == 1.0 && s.cityDensity == 0.5 && s.distanceScaling == 0.0 { return "ROCKSTAR" }
     if s.fps == 120 { return "120 FPS" }
     if s.fps == 30 && s.scale == 0.35 { return "SAVE RAM" }
     return "CUSTOM"
@@ -1494,11 +1501,14 @@ private func installedModSize(_ name: String) -> String {
     return ""
 }
 
-/// Last "[RAM] ..." line from the console tail, or nil when the game has not logged one.
-private func lastRamLine() -> String? {
-    guard let ptr = muguet_console_tail() else { return nil }
+/// Live RAM tracker line, read straight from the tracker slot
+/// ("—" when the game has not started yet). The tracker never logs
+/// to the console, so grepping the tail for "[RAM]" always came up
+/// empty and the home RAM card permanently showed "—".
+private func ramTrackerText() -> String? {
+    guard let ptr = muguet_ram_tracker_text() else { return nil }
     let text = String(cString: ptr)
-    return text.split(separator: "\n").last(where: { $0.contains("[RAM]") }).map(String.init)
+    return text.isEmpty ? nil : text
 }
 
 // Dark web-style card: #101216 panel, 1px white-10% border, 4pt radius.
@@ -1580,7 +1590,7 @@ private func feedPost(avatar: String, name: String, time: String, body: String) 
     }
 }
 
-/// Live RAM tracker line from the console tail ("—" when the game has not logged one yet).
+/// Live RAM tracker line from the tracker slot ("—" when the game has not started yet).
 struct RamLiveLineView: View {
     @State private var line: String?
     @State private var tick = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
@@ -1588,8 +1598,8 @@ struct RamLiveLineView: View {
         Text(line ?? "—")
             .font(.system(size: 10))
             .foregroundColor(muguetMuted)
-            .onReceive(tick) { _ in line = lastRamLine() }
-            .onAppear { line = lastRamLine() }
+            .onReceive(tick) { _ in line = ramTrackerText() }
+            .onAppear { line = ramTrackerText() }
     }
 }
 
@@ -1602,11 +1612,19 @@ struct ConsolePreviewView: View {
     @State private var tick = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
 
     var body: some View {
+        // ScrollViewReader so Auto-scroll can follow the tail to the
+        // bottom like the real console does. Without it the toggle
+        // promised following but the offset never moved and new lines
+        // arrived below the fold, out of view.
+        ScrollViewReader { proxy in
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text("Console").font(.system(size: 11, weight: .bold)).foregroundColor(.white)
                 Spacer()
-                Button(autoScroll ? "Auto-scroll: On" : "Auto-scroll: Off") { autoScroll.toggle() }
+                Button(autoScroll ? "Auto-scroll: On" : "Auto-scroll: Off") {
+                    autoScroll.toggle()
+                    if autoScroll { proxy.scrollTo("bottom", anchor: .bottom) }
+                }
                     .font(.system(size: 10)).foregroundColor(muguetMuted)
                     .buttonStyle(.plain)
             }
@@ -1616,6 +1634,7 @@ struct ConsolePreviewView: View {
                     .lineSpacing(2)
                     .foregroundColor(Color(hex: "9fe8a9"))
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .id("bottom")
             }
             .frame(height: 84)
             .padding(6)
@@ -1628,11 +1647,11 @@ struct ConsolePreviewView: View {
                     .foregroundColor(.white)
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
-                    .onSubmit { submit() }
+                    .onSubmit { submit(proxy: proxy) }
                     .padding(.horizontal, 9)
                     .padding(.vertical, 8)
                     .background(RoundedRectangle(cornerRadius: 3).fill(Color(hex: "0a0b0d")))
-                Button("RUN") { submit() }
+                Button("RUN") { submit(proxy: proxy) }
                     .font(.system(size: 11, weight: .bold))
                     .foregroundColor(.white)
                     .padding(.horizontal, 12)
@@ -1641,25 +1660,31 @@ struct ConsolePreviewView: View {
                     .buttonStyle(.plain)
             }
         }
-        .onReceive(tick) { _ in poll() }
-        .onAppear { poll() }
+        .onReceive(tick) { _ in poll(proxy: proxy) }
+        .onAppear { poll(proxy: proxy) }
+        }
     }
 
-    private func poll() {
+    private func poll(proxy: ScrollViewProxy) {
         if !autoScroll { return }
         guard let ptr = muguet_console_tail() else { return }
         let text = String(cString: ptr)
         let tail = text.split(separator: "\n", omittingEmptySubsequences: false).suffix(30).joined(separator: "\n")
-        if tail != logText { logText = tail }
+        if tail != logText {
+            logText = tail
+            // Next runloop turn, after the text has re-laid out, so
+            // the scroll lands on the new bottom instead of the old one.
+            DispatchQueue.main.async { proxy.scrollTo("bottom", anchor: .bottom) }
+        }
     }
 
-    private func submit() {
+    private func submit(proxy: ScrollViewProxy) {
         let cmd = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cmd.isEmpty else { return }
         input = ""
         cmd.withCString { muguet_console_command($0) }
         if !autoScroll { autoScroll = true }
-        poll()
+        poll(proxy: proxy)
     }
 }
 
@@ -1836,7 +1861,13 @@ struct CLSettingsPanel: View {
                         .padding(.vertical, 8)
                     }
                     .onAppear {
-                        if let j = jumpSection { proxy.scrollTo(j, anchor: .top) }
+                        // Next runloop turn: scrollTo in onAppear commonly
+                        // runs before the ScrollView content is laid out,
+                        // so the first open from a home shortcut jumped
+                        // nowhere.
+                        DispatchQueue.main.async {
+                            if let j = jumpSection { proxy.scrollTo(j, anchor: .top) }
+                        }
                     }
                     .onChange(of: jumpSection) { _ in
                         if let j = jumpSection {
@@ -2016,9 +2047,11 @@ struct CLSettingsPanel: View {
     private var presetDescription: String {
         switch currentPresetName(s) {
         case "ULTRA LOW":
-            return "Ultra Low — 25% resolution · Texture 0 · Shader 1 · Shadow 0 · Reflection 0 · MSAA 0 · FXAA off · Water 0 · Particle 0 · Grass 0 · PostFX 0 · CityDensity 0 · PedVariety 0 · MaxLodScale 0."
+            return "Ultra Low — 25% resolution · Texture 0 · Shadow 0 · Reflection 0 · FXAA off · Water 0 · Particle 0 · Grass 0 · PostFX 0 · CityDensity 0 · PedVariety 0 · LOD −0.5."
         case "SAVE RAM":
-            return "Save RAM — 800 MB–1 GB · 30 FPS · 50%."
+            return "Save RAM — 800 MB–1 GB · 30 FPS · 35%."
+        case "ROCKSTAR":
+            return "Rockstar defaults — 120 FPS · 50% · Shadows Normal · Shader High."
         case "120 FPS":
             return "120 FPS — 120 · 50% · V-Sync · Deep Opt."
         default:
@@ -3035,7 +3068,7 @@ struct LauncherView: View {
             .buttonStyle(.plain)
             HStack(spacing: 5) {
                 Circle().fill(muguetGreen).frame(width: 6, height: 6)
-                Text("\(statusLine) · \(appVersionCompact) · 70 MB · iOS 15+ · \(Int(s.scale * 100))% · \(s.fps) fps · mode \(s.mode)")
+                Text("\(statusLine) · \(appVersionCompact) · 70 MB · iOS 15+ · \(Int(s.scale * 100))% · \(s.fps) fps · \(s.name)")
                     .font(.system(size: 10))
                     .foregroundColor(muguetMuted)
                     .fixedSize(horizontal: false, vertical: true)
@@ -3327,7 +3360,7 @@ struct LauncherView: View {
                          body: "Rust 1.98.1 · aarch64")
                 feedPost(avatar: "▣", name: "Game data", time: "on this iPhone",
                          body: importer.ready
-                            ? "Ready · \(Int(s.scale * 100))% · \(s.fps) fps · mode \(s.mode)"
+                            ? "Ready · \(Int(s.scale * 100))% · \(s.fps) fps · \(modeName)"
                             : "Not imported yet")
             }
             webCard {
@@ -3368,7 +3401,8 @@ struct LauncherView: View {
     // MARK: - Right column: In This Build
 
     private func rightColumn(width: CGFloat) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
+        let mods = installedModNames()
+        return VStack(alignment: .leading, spacing: 5) {
             webCard {
                 Text("IN THIS BUILD")
                     .font(.system(size: 12.5, weight: .black))
@@ -3382,7 +3416,7 @@ struct LauncherView: View {
                 feedPost(avatar: "λ", name: "Presets", time: "launcher",
                          body: "120 FPS · Save RAM · Ultra Low")
                 feedPost(avatar: "λ", name: "Mods", time: "Build 8",
-                         body: installedModNames().isEmpty ? "No mods installed" : installedModNames().joined(separator: " · "))
+                         body: mods.isEmpty ? "No mods installed" : mods.joined(separator: " · "))
                 feedPost(avatar: "λ", name: "Patcher & spawn", time: "Build 8",
                          body: "[patch] off · spawninfo ✓")
             }
