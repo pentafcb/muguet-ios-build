@@ -1251,7 +1251,13 @@ struct CLToggle: View {
             withAnimation(.easeInOut(duration: 0.2)) { isOn.toggle() }
         } label: {
             HStack {
-                Text(title).foregroundColor(.white)
+                // 12.5pt and wrapping: at the default 17pt the title
+                // was cut off at the column edge — "Auto-spawn vehicle
+                // in Sand…" — in the narrow drawer columns.
+                Text(title)
+                    .font(.system(size: 12.5))
+                    .foregroundColor(.white)
+                    .fixedSize(horizontal: false, vertical: true)
                 Spacer()
                 ZStack(alignment: isOn ? .trailing : .leading) {
                     Capsule()
@@ -1269,7 +1275,11 @@ struct CLToggle: View {
 }
 
 // Capsule option chips, mirroring CloudLauncher's chip rows. Selected chip
-// is white with dark text, unselected is white 0.1 fill.
+// is white with dark text, unselected is white 0.1 fill. Chips wrap into
+// rows: the old horizontal ScrollView made the column as wide as the whole
+// chip row, so the 3-column drawer overflowed the panel and options were
+// cut off at the column edge — Sandbox F…, Standard… — with no
+// visible way to reach them.
 struct CLChipPicker<Value: Hashable>: View {
     let label: String
     @Binding var selection: Value
@@ -1277,22 +1287,43 @@ struct CLChipPicker<Value: Hashable>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(label).font(.system(size: 12.5)).foregroundColor(.white.opacity(0.6))
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(options.indices, id: \.self) { i in
-                        let option = options[i]
-                        Button { selection = option.1 } label: {
-                            Text(option.0)
-                                .font(.system(size: 14, weight: selection == option.1 ? .bold : .regular))
-                                .foregroundColor(.white)
-                                .padding(.horizontal, 16).padding(.vertical, 8)
-                                .background(Capsule().fill(selection == option.1 ? muguetPink : Color.white.opacity(0.1)))
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(chipRows(), id: \.self) { row in
+                    HStack(spacing: 8) {
+                        ForEach(row, id: \.self) { i in
+                            let option = options[i]
+                            Button { selection = option.1 } label: {
+                                Text(option.0)
+                                    .font(.system(size: 12, weight: selection == option.1 ? .bold : .regular))
+                                    .foregroundColor(.white)
+                                    .padding(.horizontal, 10).padding(.vertical, 7)
+                                    .background(Capsule().fill(selection == option.1 ? muguetPink : Color.white.opacity(0.1)))
+                            }
+                            .buttonStyle(.plain)
                         }
-                        .buttonStyle(.plain)
                     }
                 }
             }
         }
+    }
+
+    // Greedy wrap on an estimated character width (chips are 12pt).
+    // Budget ~160pt: the drawer panel caps at 600pt, three columns,
+    // minus column + group padding. Widths are overestimated on
+    // purpose so a row breaks early instead of overflowing.
+    private func chipRows() -> [[Int]] {
+        var rows: [[Int]] = [[]]
+        var width = 0
+        for i in options.indices {
+            let w = options[i].0.count * 7 + 22
+            if width + w > 160 && !rows[rows.count - 1].isEmpty {
+                rows.append([])
+                width = 0
+            }
+            rows[rows.count - 1].append(i)
+            width += w + 8
+        }
+        return rows
     }
 }
 
@@ -1625,7 +1656,7 @@ struct ConsolePreviewView: View {
                     autoScroll.toggle()
                     if autoScroll { proxy.scrollTo("bottom", anchor: .bottom) }
                 }
-                    .font(.system(size: 10)).foregroundColor(muguetMuted)
+                    .font(.system(size: 10)).foregroundColor(muguetMuted).fixedSize(horizontal: false, vertical: true)
                     .buttonStyle(.plain)
             }
             ScrollView {
@@ -1934,7 +1965,7 @@ struct CLSettingsPanel: View {
                 webGroup {
                     CLDarkField(label: "Character name", text: $s.name, placeholder: "Enter a character name...", autocapitalization: .words)
                     Text("This name will show above your character's head when you play with friends.")
-                        .font(.system(size: 10)).foregroundColor(muguetMuted)
+                        .font(.system(size: 10)).foregroundColor(muguetMuted).fixedSize(horizontal: false, vertical: true)
                 }
             }
             .id("character")
@@ -1961,7 +1992,7 @@ struct CLSettingsPanel: View {
                         .font(.system(size: 10, weight: .black)).kerning(0.7).foregroundColor(muguetMuted)
                     CLPresetButtons(s: s, resetAlertMessage: $resetAlertMessage, showingResetAlert: $showingResetAlert)
                     Text(presetDescription)
-                        .font(.system(size: 10)).foregroundColor(muguetMuted)
+                        .font(.system(size: 10)).foregroundColor(muguetMuted).fixedSize(horizontal: false, vertical: true)
                 }
                 webGroup {
                     CLChipPicker(label: "Frame rate (Frame Limit)", selection: $s.fps, options: [
@@ -1990,10 +2021,10 @@ struct CLSettingsPanel: View {
                     ])
                     CLToggle(title: "Lock ProMotion V-Sync 120Hz pacing", isOn: $s.promotionSync)
                     Text("Syncs precisely with your iPhone screen's 60Hz/120Hz refresh rate to remove stutter and keep 120 FPS as smooth as possible.")
-                        .font(.system(size: 10)).foregroundColor(muguetMuted)
+                        .font(.system(size: 10)).foregroundColor(muguetMuted).fixedSize(horizontal: false, vertical: true)
                     CLToggle(title: "Deep graphics optimization", isOn: $s.deepOptimization)
                     Text("Automatically limits shadows, dense grass, and anti-aliasing in GTA V settings.xml to hold max FPS when the device heats up.")
-                        .font(.system(size: 10)).foregroundColor(muguetMuted)
+                        .font(.system(size: 10)).foregroundColor(muguetMuted).fixedSize(horizontal: false, vertical: true)
                     Button(action: {
                         s.applyRockstarDefaults()
                         resetAlertMessage = "Restored Rockstar GTA V graphics to safe defaults (Shader High, MSAA Off, Shadows Normal, 120 FPS). The black screen caused by Max Settings is fully fixed!"
@@ -2016,7 +2047,7 @@ struct CLSettingsPanel: View {
                     .font(.system(size: 11, weight: .black)).kerning(1.0).foregroundColor(.white)
                 webGroup {
                     Text("Phone > Quick Save · Files > saves")
-                        .font(.system(size: 10)).foregroundColor(muguetMuted)
+                        .font(.system(size: 10)).foregroundColor(muguetMuted).fixedSize(horizontal: false, vertical: true)
                     Button("Share / Backup saves") { shareSaves() }
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundColor(.white)
@@ -2034,7 +2065,7 @@ struct CLSettingsPanel: View {
                     .padding(.vertical, 8)
                     .buttonStyle(.plain)
                     if !verifyStatus.isEmpty {
-                        Text(verifyStatus).font(.system(size: 10)).foregroundColor(muguetMuted)
+                        Text(verifyStatus).font(.system(size: 10)).foregroundColor(muguetMuted).fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }
@@ -2068,7 +2099,7 @@ struct CLSettingsPanel: View {
                     .font(.system(size: 11, weight: .black)).kerning(1.0).foregroundColor(.white)
                 webGroup {
                     Text("Set GTA V graphics options right here without changing them in-game.")
-                        .font(.system(size: 10)).foregroundColor(muguetMuted)
+                        .font(.system(size: 10)).foregroundColor(muguetMuted).fixedSize(horizontal: false, vertical: true)
                     CLChipPicker(label: "Shadow Quality", selection: $s.shadowQuality, options: [
                         ("Off", 0),
                         ("Normal", 1),
@@ -2174,7 +2205,7 @@ struct CLSettingsPanel: View {
                     }
                     .font(.system(size: 11.5))
                     Text("Drag on the right FIRE button to adjust aim while shooting. The left FIRE button frees your right thumb to aim.")
-                        .font(.system(size: 10)).foregroundColor(muguetMuted)
+                        .font(.system(size: 10)).foregroundColor(muguetMuted).fixedSize(horizontal: false, vertical: true)
                     CLToggle(title: "Mute audio", isOn: $s.mute)
                 }
             }
@@ -2214,12 +2245,12 @@ struct CLSettingsPanel: View {
                             HStack {
                                 Circle().fill(Color.green).frame(width: 8, height: 8)
                                 Text("AWS iOSVN Singapore server (Supports 32 / 64 players)")
-                                    .font(.system(size: 10)).foregroundColor(muguetMuted)
+                                    .font(.system(size: 10)).foregroundColor(muguetMuted).fixedSize(horizontal: false, vertical: true)
                             }
                         }
                         .foregroundColor(.white)
                         Text("Host sync")
-                            .font(.system(size: 10)).foregroundColor(muguetMuted)
+                            .font(.system(size: 10)).foregroundColor(muguetMuted).fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }
@@ -2240,7 +2271,7 @@ struct CLSettingsPanel: View {
                         }
                         .buttonStyle(.plain)
                         Text("Invincibility, full weapons, helicopter, race cars... Cheat codes are auto-locked in Online mode.")
-                            .font(.system(size: 10)).foregroundColor(muguetMuted)
+                            .font(.system(size: 10)).foregroundColor(muguetMuted).fixedSize(horizontal: false, vertical: true)
                     }
                 }
                 .id("cheats")
@@ -2254,7 +2285,7 @@ struct CLSettingsPanel: View {
                         CLToggle(title: "Auto-spawn vehicle in Sandbox", isOn: $s.sandboxAutoSpawn)
                             .onChange(of: s.sandboxAutoSpawn) { _ in try? s.save() }
                         Text("When on, every Sandbox session starts you inside the first vehicle below. Turn it off if the spawn ever causes trouble — the CAR button and the in-game menu still work.")
-                            .font(.system(size: 10)).foregroundColor(muguetMuted)
+                            .font(.system(size: 10)).foregroundColor(muguetMuted).fixedSize(horizontal: false, vertical: true)
                         VStack(spacing: 6) {
                             ForEach(s.sandboxVehicles, id: \.self) { code in
                                 HStack {
@@ -2299,7 +2330,7 @@ struct CLSettingsPanel: View {
                             .disabled(newVehicleCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         }
                         Text("CODES — FIRST = STARTER · CAR · 30s max")
-                            .font(.system(size: 10)).foregroundColor(muguetMuted)
+                            .font(.system(size: 10)).foregroundColor(muguetMuted).fixedSize(horizontal: false, vertical: true)
                     }
                 }
                 .id("sandbox")
@@ -2310,10 +2341,10 @@ struct CLSettingsPanel: View {
                     .font(.system(size: 11, weight: .black)).kerning(1.0).foregroundColor(.white)
                 webGroup {
                     Text("Add-on DLC packs (dlc.rpf). Install a mod zip or a bare dlc.rpf and the game will mount it. If the pack's own vehicles.meta cannot be read, pick the mod's vehicles.meta file — the launcher merges its models into the game's vehicles.meta so the vehicle can spawn. The game reads the mod list at launch — restart the game after installing or removing a mod.")
-                        .font(.system(size: 10)).foregroundColor(muguetMuted)
+                        .font(.system(size: 10)).foregroundColor(muguetMuted).fixedSize(horizontal: false, vertical: true)
                     if installedMods.isEmpty {
                         Text("No add-on mods installed. The 11 built-in packs are not listed here.")
-                            .font(.system(size: 10)).foregroundColor(muguetMuted)
+                            .font(.system(size: 10)).foregroundColor(muguetMuted).fixedSize(horizontal: false, vertical: true)
                     } else {
                         VStack(spacing: 6) {
                             ForEach(installedMods) { mod in
@@ -2386,10 +2417,10 @@ struct CLSettingsPanel: View {
                         ProgressView().tint(.white)
                     }
                     if !modsStatus.isEmpty {
-                        Text(modsStatus).font(.system(size: 10)).foregroundColor(muguetMuted)
+                        Text(modsStatus).font(.system(size: 10)).foregroundColor(muguetMuted).fixedSize(horizontal: false, vertical: true)
                     }
                     Text("dlc.rpf → dlcPacks/ · Restart · Stock: 11 packs")
-                        .font(.system(size: 10)).foregroundColor(muguetMuted)
+                        .font(.system(size: 10)).foregroundColor(muguetMuted).fixedSize(horizontal: false, vertical: true)
                 }
                 .onAppear { refreshMods() }
             }
@@ -2410,7 +2441,7 @@ struct CLSettingsPanel: View {
                     .font(.system(size: 11.5))
                     RamLiveLineView()
                     Text("T1 <768 · T2 <384 · T3 <192 MB · T3 = pause")
-                        .font(.system(size: 10)).foregroundColor(muguetMuted)
+                        .font(.system(size: 10)).foregroundColor(muguetMuted).fixedSize(horizontal: false, vertical: true)
                     Button("Share startup / memory logs") { shareDiagnostics() }
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundColor(.white)
@@ -2418,10 +2449,10 @@ struct CLSettingsPanel: View {
                         .padding(.vertical, 8)
                         .buttonStyle(.plain)
                     Text("After a crash, reopen GTA V and share the previous log. Logs contain connection addresses and runtime errors, not game files.")
-                        .font(.system(size: 10)).foregroundColor(muguetMuted)
+                        .font(.system(size: 10)).foregroundColor(muguetMuted).fixedSize(horizontal: false, vertical: true)
                     ConsolePreviewView()
                     Text("car · heal · dv · ram · quit")
-                        .font(.system(size: 10)).foregroundColor(muguetMuted)
+                        .font(.system(size: 10)).foregroundColor(muguetMuted).fixedSize(horizontal: false, vertical: true)
                 }
             }
             .id("diagnostics")
@@ -3383,7 +3414,7 @@ struct LauncherView: View {
                     ForEach(mods, id: \.self) { name in
                         HStack(spacing: 5) {
                             Text(name).font(.system(size: 10, weight: .bold)).foregroundColor(.white)
-                            Text(installedModSize(name)).font(.system(size: 10)).foregroundColor(muguetMuted)
+                            Text(installedModSize(name)).font(.system(size: 10)).foregroundColor(muguetMuted).fixedSize(horizontal: false, vertical: true)
                         }
                     }
                 }
