@@ -70,6 +70,11 @@ pub struct RpfReport {
     pub setup2_type: String,
     pub content: bool,
     pub vehicles_meta: Option<String>,
+    // True when vehicles.meta exists in the TOC but this reader could
+    // not decompress it to XML, so model_names is empty for a reader
+    // reason, not because the file declares no model. The verdict
+    // must say so instead of "has no <modelName>".
+    pub vehicles_meta_unreadable: bool,
     pub model_names: Vec<String>,
     pub meta_in_data_files: bool,
     pub meta_file_type: String,
@@ -478,6 +483,7 @@ pub fn inspect_rpf(path: &Path, mod_name: &str) -> RpfReport {
         setup2_type: String::new(),
         content: false,
         vehicles_meta: None,
+        vehicles_meta_unreadable: false,
         model_names: Vec::new(),
         meta_in_data_files: false,
         meta_file_type: String::new(),
@@ -511,6 +517,9 @@ fn verdict(r: &RpfReport) -> String {
         return "vehicles.meta MISSING — no vehicle model is declared".to_string();
     }
     if r.model_names.is_empty() {
+        if r.vehicles_meta_unreadable {
+            return "vehicles.meta could not be decompressed — this reader cannot read the model name (the engine may still mount it)".to_string();
+        }
         return "vehicles.meta has no <modelName> — nothing to spawn".to_string();
     }
     if !r.meta_in_data_files {
@@ -636,9 +645,15 @@ fn inspect_inner(path: &Path, report: &mut RpfReport) -> Result<(), String> {
         match extract(&mut file, data_start, e) {
             Ok(bytes) => match as_xml(bytes) {
                 Some(text) => report.model_names = xml_tags(&text, "modelName"),
-                None => report.notes.push("vehicles.meta did not decompress to XML — TOC offsets may not line up".to_string()),
+                None => {
+                    report.vehicles_meta_unreadable = true;
+                    report.notes.push("vehicles.meta did not decompress to XML — TOC offsets may not line up".to_string());
+                }
             },
-            Err(e) => report.notes.push(format!("vehicles.meta could not be extracted: {e}")),
+            Err(e) => {
+                report.vehicles_meta_unreadable = true;
+                report.notes.push(format!("vehicles.meta could not be extracted: {e}"));
+            }
         }
     }
     if report.content && !content_text.is_empty() {

@@ -36,14 +36,20 @@ pub fn load_manifest(data: &Path) -> Result<Value> {
     load_manifest_with_progress(data, |_, _| {})
 }
 
-// Manifest record for one installed mod pack: ("x64/dlcPacks/<name>/dlc.rpf", size).
+// Manifest record for one installed mod pack: ("x64/dlcPacks/<name>/dlc.rpf", size, mtime).
 // None when the folder is a stock pack, has no readable dlc.rpf, is
 // already listed in the manifest, or has an unsafe name. The record
-// shape is exactly the shape every other manifest record has and the
-// shape the consumers read: [name, size] — runtime_files takes
-// record.get(0) as the path and record.get(1) as the size, and the
-// engine is handed these same bytes by httpfs_manifest.
-fn mod_pack_record(data: &Path, folder: &str, existing: &[String]) -> Option<(String, u64)> {
+// shape is exactly the shape every other manifest record has: [name, size, mtime]
+// — the engine's httpfs parser requires all three fields. A 2-element
+// record is malformed to the engine: build 18ad7153 injected [name, size]
+// only and the game trapped at startup with "httpfs: manifest is
+// malformed after 5537 entries" (5537 = the kept stock records; the
+// injected record was #5538). The third field is the file's mtime as
+// Unix seconds — proven by the real manifest.json (all 5814 records
+// carry one, 2026-09-19..2026-10-05; version is "max-mtime-count").
+// runtime_files reads record.get(0) as the path and record.get(1) as
+// the size, and the engine is handed these same bytes by httpfs_manifest.
+fn mod_pack_record(data: &Path, folder: &str, existing: &[String]) -> Option<(String, u64, u64)> {
     if folder.is_empty() || folder == "." || folder == ".." || folder.contains('/') || folder.contains('\\') {
         return None;
     }
@@ -58,16 +64,22 @@ fn mod_pack_record(data: &Path, folder: &str, existing: &[String]) -> Option<(St
     if !metadata.is_file() || metadata.len() == 0 {
         return None;
     }
-    Some((name, metadata.len()))
+    let mtime = metadata
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    Some((name, metadata.len(), mtime))
 }
 
-// The (name, size) pairs to append to the runtime manifest, one per
+// The (name, size, mtime) triples to append to the runtime manifest, one per
 // installed mod pack. A pack is listed only when its dlc.rpf is
 // present and readable; stock packs are skipped. `existing` is the
 // list of names already in the manifest, and names accepted here are
 // added to it as we go, so two folders differing only by case cannot
 // produce duplicate records.
-fn mod_pack_records(data: &Path, existing: &[String]) -> Vec<(String, u64)> {
+fn mod_pack_records(data: &Path, existing: &[String]) -> Vec<(String, u64, u64)> {
     let mut seen: Vec<String> = existing.to_vec();
     let Ok(entries) = std::fs::read_dir(data.join("x64").join("dlcPacks")) else {
         return Vec::new();
@@ -75,9 +87,9 @@ fn mod_pack_records(data: &Path, existing: &[String]) -> Vec<(String, u64)> {
     let mut out = Vec::new();
     for entry in entries.flatten() {
         let Ok(folder) = entry.file_name().into_string() else { continue };
-        if let Some((name, size)) = mod_pack_record(data, &folder, &seen) {
+        if let Some((name, size, mtime)) = mod_pack_record(data, &folder, &seen) {
             seen.push(name.clone());
-            out.push((name, size));
+            out.push((name, size, mtime));
         }
     }
     out
@@ -173,8 +185,8 @@ pub fn load_manifest_with_progress(data: &Path, mut progress: impl FnMut(usize, 
         .collect();
     let records = mod_pack_records(data, &existing);
     let injected = records.len();
-    for (name, size) in records {
-        files.push(Value::from(vec![Value::from(name), Value::from(size)]));
+    for (name, size, mtime) in records {
+        files.push(Value::from(vec![Value::from(name), Value::from(size), Value::from(mtime)]));
     }
     progress(total, total);
     if adjusted != 0 { eprintln!("[config] reconciled {adjusted} optional or modified manifest entries"); }
