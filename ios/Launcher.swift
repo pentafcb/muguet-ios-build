@@ -1621,15 +1621,26 @@ private func webChip(_ text: String, gold: Bool = false) -> some View {
 }
 
 /// One feed post, as in THE PROJECT / IN THIS BUILD.
-private func feedPost(avatar: String, name: String, time: String, body: String) -> some View {
+/// avatarURL loads the person's real GitHub avatar (AsyncImage); when
+/// it is nil or the image fails to load, the letter tile shows instead.
+private func feedPost(avatar: String, name: String, time: String, body: String, avatarURL: String? = nil) -> some View {
     VStack(alignment: .leading, spacing: 0) {
         HStack(alignment: .top, spacing: 7) {
-            Text(avatar)
-                .font(.system(size: 12, weight: .black))
-                .foregroundColor(.white)
+            if let urlString = avatarURL, let url = URL(string: urlString) {
+                AsyncImage(url: url) { phase in
+                    if let image = phase.image {
+                        image
+                            .resizable()
+                            .scaledToFill()
+                    } else {
+                        avatarLetter(avatar)
+                    }
+                }
                 .frame(width: 26, height: 26)
-                .background(Color(hex: "2b2e35"))
                 .clipShape(RoundedRectangle(cornerRadius: 3))
+            } else {
+                avatarLetter(avatar)
+            }
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 4) {
                     Text(name).font(.system(size: 11, weight: .bold)).foregroundColor(.white)
@@ -1646,6 +1657,16 @@ private func feedPost(avatar: String, name: String, time: String, body: String) 
         .padding(.vertical, 5)
         Divider().background(Color.white.opacity(0.06))
     }
+}
+
+/// The letter tile feedPost falls back to when no avatar image loads.
+private func avatarLetter(_ letter: String) -> some View {
+    Text(letter)
+        .font(.system(size: 12, weight: .black))
+        .foregroundColor(.white)
+        .frame(width: 26, height: 26)
+        .background(Color(hex: "2b2e35"))
+        .clipShape(RoundedRectangle(cornerRadius: 3))
 }
 
 /// Live RAM tracker line from the tracker slot ("—" when the game has not started yet).
@@ -3614,9 +3635,11 @@ struct LauncherView: View {
                     .foregroundColor(Color(hex: "dfe2e6"))
                     .padding(.bottom, 2)
                 feedPost(avatar: "λ", name: "pentafcb / muguet-gta", time: "this build",
-                         body: "\(appVersionCompact) · 70 MB · iOS 15+")
+                         body: "\(appVersionCompact) · 70 MB · iOS 15+",
+                         avatarURL: "https://avatars.githubusercontent.com/u/68836355?v=4")
                 feedPost(avatar: "c", name: "c22dev / muguet", time: "upstream",
-                         body: "c22dev · iOSVNNews · B\(upstreamBuild)")
+                         body: "c22dev · iOSVNNews · B\(upstreamBuild)",
+                         avatarURL: "https://avatars.githubusercontent.com/u/102235607?v=4")
                 feedPost(avatar: "λ", name: "Build", time: "CI",
                          body: "Rust 1.98.1 · aarch64")
                 feedPost(avatar: "▣", name: "Game data", time: "on this iPhone",
