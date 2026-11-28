@@ -206,7 +206,7 @@ pub fn install_mod(picked: &Path, name_hint: &str) -> Result<String> {
         std::fs::copy(picked, &dest).with_context(|| format!("cannot copy {}", picked.display()))?;
     }
     add_dlc_list_line(&name)?;
-    crate::debug::console_line(&format!("[mods] installed {name}"));
+    crate::debug::console_line(&format!("^2[mods] installed {name}"));
     Ok(name)
 }
 
@@ -1021,7 +1021,7 @@ pub fn remove_mod(raw_name: &str) -> Result<()> {
             "[mods] warning: could not strip {name} from base carcols.meta: {e:#}"
         ));
     }
-    crate::debug::console_line(&format!("[mods] removed {name}"));
+    crate::debug::console_line(&format!("^2[mods] removed {name}"));
     Ok(())
 }
 

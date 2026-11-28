@@ -1356,7 +1356,7 @@ impl Gpu {
                 self.stall_overlay_shown = true;
                 STREAM_STALLED.store(true, Ordering::Relaxed);
                 log(&format!("memory: STREAMING STALLED — no GPU commands, draws/presents frozen {quiet_secs}s, heap {heap_mb} MB at live cap {live_cap_mb} MB, available {} MB", avail.map(|a| a >> 20).unwrap_or(0)));
-                crate::debug::console_line("[memory] STREAMING STALLED — low memory. Drive back toward the city, or restart with lower settings.");
+                crate::debug::console_line("^3[memory] STREAMING STALLED — low memory. Drive back toward the city, or restart with lower settings.");
                 self.mark_low_memory_session("streaming stall");
             }
             Some(since) if now.duration_since(since) >= Duration::from_secs(30) => {
@@ -4095,7 +4095,7 @@ impl Gpu {
             // second, so an unconditional log would spam the console.
             if tier >= 1 && self.last_tier == 0 {
                 log(&format!("memory: available {avail_mb} MB — early tier {tier}, 30 FPS cap + purge requested; heap growth stops below 1250 MB free"));
-                crate::debug::console_line(&format!("[memory] low memory warning: {avail_mb} MB free — 30 FPS cap on, cleaning up; head back toward the city before the heap fills"));
+                crate::debug::console_line(&format!("^3[memory] low memory warning: {avail_mb} MB free — 30 FPS cap on, cleaning up; head back toward the city before the heap fills"));
             }
             self.last_tier = tier;
             if tier >= 1 { request_memory_cleanup(); }

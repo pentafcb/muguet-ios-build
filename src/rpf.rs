@@ -135,7 +135,7 @@ impl RpfReport {
         for n in &self.notes {
             out.push(format!("[rpf] note: {n}"));
         }
-        out.push(format!("[rpf] verdict: {}", self.verdict));
+        out.push(format!("{}[rpf] verdict: {}", verdict_color(&self.verdict), self.verdict));
         out
     }
 
@@ -163,8 +163,24 @@ impl RpfReport {
         for n in &self.notes {
             out.push(format!("[rpf] note: {n}"));
         }
-        out.push(format!("[rpf] verdict: {}", self.verdict));
+        out.push(format!("{}[rpf] verdict: {}", verdict_color(&self.verdict), self.verdict));
         out
+    }
+}
+
+// FiveM-style console color for the verdict line: green when the pack
+// looks complete, yellow when the model name could not be read (the
+// engine may still mount it — a warning, not a failure), red when the
+// pack cannot register at all.
+fn verdict_color(v: &str) -> &'static str {
+    if v.contains("could not be decompressed") || v.contains("has no <modelName>") {
+        "^3"
+    } else if v.starts_with("pack looks complete") {
+        "^2"
+    } else if v.contains("MISSING") || v.contains("cannot inspect") || v.contains("NOT in") || v.contains("never loads") {
+        "^1"
+    } else {
+        ""
     }
 }
 

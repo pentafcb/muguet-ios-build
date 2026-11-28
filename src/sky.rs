@@ -443,7 +443,7 @@ pub fn apply_sky_in_dir(look: &str, dir: &Path) -> SkyReport {
             )
         } else if restored_n > 0 {
             format!(
-                "sky off — stock timecycle restored in {restored_n} file{} (takes effect on next launch)",
+                "^2sky off — stock timecycle restored in {restored_n} file{} (takes effect on next launch)",
                 if restored_n == 1 { "" } else { "s" }
             )
         } else {
@@ -489,7 +489,7 @@ pub fn apply_sky_in_dir(look: &str, dir: &Path) -> SkyReport {
             reports.len()
         )
     } else if written_n == 0 {
-        format!("{look} sky already applied ({replaced} values across {matched_n} files) — takes effect on next launch")
+        format!("^3{look} sky already applied ({replaced} values across {matched_n} files) — takes effect on next launch")
     } else {
         let counts: Vec<String> = reports
             .iter()
@@ -497,7 +497,7 @@ pub fn apply_sky_in_dir(look: &str, dir: &Path) -> SkyReport {
             .map(|r| format!("{} {}", r.file_name, r.replaced))
             .collect();
         let mut message = format!(
-            "{look} sky written ({replaced} values across {} files: {}) — sky colour takes effect on next launch; weather + shadows apply now",
+            "^2{look} sky written ({replaced} values across {} files: {}) — sky colour takes effect on next launch; weather + shadows apply now",
             counts.len(),
             counts.join(", ")
         );

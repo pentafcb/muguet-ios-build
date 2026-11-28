@@ -573,7 +573,7 @@ fn read_preset_file() -> PresetFile {
         // silent delete) and start empty. The next save rewrites a
         // clean file.
         let _ = std::fs::rename(&path, dir.join(format!("{FX_PRESETS_FILE}.corrupt")));
-        crate::debug::console_line("[fx] presets file was corrupt — moved to muguet-fx-presets.json.corrupt, starting empty");
+        crate::debug::console_line("^1[fx] presets file was corrupt — moved to muguet-fx-presets.json.corrupt, starting empty");
         return PresetFile::default();
     };
     let mut out = PresetFile::default();

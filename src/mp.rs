@@ -2537,9 +2537,9 @@ fn apply_no_traffic(c: &mut Cmd) {
         if c.i_opt("SetPedDensityMultiplierThisFrame", &[f(0.0)]).is_none() { missing.push("ped"); }
         if c.i_opt("SetScenarioPedDensityMultiplierThisFrame", &[f(0.0), f(0.0)]).is_none() { missing.push("scenario ped"); }
         if missing.is_empty() {
-            crate::debug::console_line("[traffic] density natives wired (5/5) — traffic cars + peds off");
+            crate::debug::console_line("^2[traffic] density natives wired (5/5) — traffic cars + peds off");
         } else if missing.len() == 5 {
-            crate::debug::console_line("[traffic] density natives NOT in this build (0/5) — settings densities only (CityDensity 0); some traffic may remain");
+            crate::debug::console_line("^1[traffic] density natives NOT in this build (0/5) — settings densities only (CityDensity 0); some traffic may remain");
         } else {
             crate::debug::console_line(&format!("[traffic] only {}/5 density natives wired — missing: {}; partial coverage", 5 - missing.len(), missing.join(", ")));
         }
@@ -2664,13 +2664,13 @@ fn poll_console_actions(c: &mut Cmd) {
                 let wired = c.i_opt("SetWeatherTypeNowPersist", &[c.ptr(S_NAME)]);
                 if !WEATHER_PROBED.swap(true, Ordering::Relaxed) {
                     match wired {
-                        Some(_) => crate::debug::console_line("[weather] SetWeatherTypeNowPersist wired — weather changes apply"),
-                        None => crate::debug::console_line("[weather] SetWeatherTypeNowPersist NOT in this build — the weather never changes; the sky colour still shows, it is painted into every weather file, not just EXTRASUNNY (rain can still fall under a pink sky)"),
+                        Some(_) => crate::debug::console_line("^2[weather] SetWeatherTypeNowPersist wired — weather changes apply"),
+                        None => crate::debug::console_line("^1[weather] SetWeatherTypeNowPersist NOT in this build — the weather never changes; the sky colour still shows, it is painted into every weather file, not just EXTRASUNNY (rain can still fall under a pink sky)"),
                     }
                 }
                 match wired {
                     Some(_) => crate::debug::console_line(&format!("weather: {name}")),
-                    None => crate::debug::console_line(&format!("weather: {name} NOT applied — weather native missing in this build")),
+                    None => crate::debug::console_line(&format!("^1weather: {name} NOT applied — weather native missing in this build")),
                 }
             }
             // SpawnInfo is handled above (it needs no ped); this arm
@@ -2705,18 +2705,22 @@ fn run_spawn_info(c: &mut Cmd, code: &str) {
         Some(_) => "yes",
         None => "n/a",
     };
-    crate::debug::console_line(&format!("[spawninfo] {code}: in_cdimage={} is_vehicle={} loaded={}",
+    // Green when the model is in the game files and loaded, red when
+    // it is not in the game files at all; anything else stays default.
+    let info_color = if in_cd == Some(1) && loaded == Some(1) { "^2" } else if in_cd == Some(0) { "^1" } else { "" };
+    crate::debug::console_line(&format!("{info_color}[spawninfo] {code}: in_cdimage={} is_vehicle={} loaded={}",
         tri(in_cd), tri(is_veh), tri(loaded)));
     let (listed, on_disk, _, _) = crate::config::dlc_status();
     let listed_here = listed.iter().any(|n| n.eq_ignore_ascii_case(code));
     let folder_here = on_disk.iter().any(|n| n.eq_ignore_ascii_case(code));
     let rpf_path = crate::rpf::mod_rpf_path(code);
-    crate::debug::console_line(&format!("[spawninfo] dlc: listed={} folder={} dlc.rpf={}",
+    let dlc_color = if listed_here && folder_here && rpf_path.is_some() { "^2" } else if rpf_path.is_none() { "^1" } else { "" };
+    crate::debug::console_line(&format!("{dlc_color}[spawninfo] dlc: listed={} folder={} dlc.rpf={}",
         if listed_here { "yes" } else { "no" },
         if folder_here { "yes" } else { "no" },
         if rpf_path.is_some() { "found" } else { "MISSING" }));
     let Some(path) = rpf_path else {
-        crate::debug::console_line(&format!("[spawninfo] no pack folder named '{code}' — check the name (see: dlc)"));
+        crate::debug::console_line(&format!("^1[spawninfo] no pack folder named '{code}' — check the name (see: dlc)"));
         return;
     };
     let report = crate::rpf::inspect_rpf(&path, code);
@@ -2724,23 +2728,23 @@ fn run_spawn_info(c: &mut Cmd, code: &str) {
         crate::debug::console_line(&line);
     }
     if !report.model_names.is_empty() && !report.model_names.iter().any(|m| m.eq_ignore_ascii_case(code)) {
-        crate::debug::console_line(&format!("[spawninfo] the rpf names this model '{}', not '{code}' — spawn with: car {}", report.model_names[0], report.model_names[0]));
+        crate::debug::console_line(&format!("^5[spawninfo] the rpf names this model '{}', not '{code}' — spawn with: car {}", report.model_names[0], report.model_names[0]));
     } else if in_cd == Some(0) {
         if report.model_names.is_empty() && crate::mods::base_vehicles_meta_has(code) {
             crate::debug::console_line(&format!(
-                "[spawninfo] model {code} is registered in the base vehicles.meta (merged from the mod's vehicles.meta) — try: car {code}"
+                "^2[spawninfo] model {code} is registered in the base vehicles.meta (merged from the mod's vehicles.meta) — try: car {code}"
             ));
         } else if report.parse_error.is_some() || report.encrypted_toc {
-            crate::debug::console_line("[spawninfo] the model is not in the game files and the pack could not be fully read — see the [rpf] lines above");
+            crate::debug::console_line("^1[spawninfo] the model is not in the game files and the pack could not be fully read — see the [rpf] lines above");
         } else if !report.setup2 || !report.content || report.vehicles_meta.is_none() || !report.meta_in_data_files || report.meta_enabled_by.is_empty() {
-            crate::debug::console_line("[spawninfo] the model is not in the game files and the pack is incomplete — see the [rpf] verdict above");
+            crate::debug::console_line("^1[spawninfo] the model is not in the game files and the pack is incomplete — see the [rpf] verdict above");
         } else {
-            crate::debug::console_line("[spawninfo] the pack looks complete but the model is not in the game files — the DLC is not mounting inside the game");
+            crate::debug::console_line("^1[spawninfo] the pack looks complete but the model is not in the game files — the DLC is not mounting inside the game");
         }
     } else if in_cd == Some(1) && loaded != Some(1) {
         crate::debug::console_line(&format!("[spawninfo] model is registered but not loaded yet — run: car {code}"));
     } else if loaded == Some(1) {
-        crate::debug::console_line(&format!("[spawninfo] model is loaded — car {code} should work; if it does not, send the console tail"));
+        crate::debug::console_line(&format!("^2[spawninfo] model is loaded — car {code} should work; if it does not, send the console tail"));
     } else {
         crate::debug::console_line("[spawninfo] validation natives not available — fall back to the 30 s wait test (car <code>)");
     }
@@ -2904,7 +2908,10 @@ pub extern "C" fn muguet_console_command(code: *const std::ffi::c_char) {
             let (listed, on_disk, low_listed, low_rpf) = crate::config::dlc_status();
             crate::debug::console_line(&format!("[dlc] listed: {}", listed.join(", ")));
             crate::debug::console_line(&format!("[dlc] on disk: {}", on_disk.join(", ")));
-            crate::debug::console_line(&format!("[dlc] loweyezv: listed={} dlc.rpf={}", if low_listed { "yes" } else { "no" }, if low_rpf { "found" } else { "MISSING" }));
+            // Green when the pack is listed and its dlc.rpf is on
+            // disk, red when either is missing.
+            let low_ok = low_listed && low_rpf;
+            crate::debug::console_line(&format!("{}[dlc] loweyezv: listed={} dlc.rpf={}", if low_ok { "^2" } else { "^1" }, if low_listed { "yes" } else { "no" }, if low_rpf { "found" } else { "MISSING" }));
             crate::debug::console_line("tip: rpf loweyezv inspects the pack, spawninfo loweyezv checks the model live");
         }
         // Read-only inspection of a mod's dlc.rpf: the true modelName
@@ -3017,13 +3024,13 @@ fn poll_spawn_request(c: &mut Cmd, game: &mut Game) {
     }
     let Some((model_name, since)) = game.pending_spawn.clone() else { return; };
     if since.elapsed() > Duration::from_secs(30) {
-        crate::debug::console_line(&format!("[mp] spawn request: {model_name} never loaded after 30 s (DLC not mounted / mod not installed?)"));
+        crate::debug::console_line(&format!("^1[mp] spawn request: {model_name} never loaded after 30 s (DLC not mounted / mod not installed?)"));
         eprintln!("[mp] spawn request: model {model_name} never loaded; giving up");
         game.pending_spawn = None;
         return;
     }
     if try_spawn_vehicle(c, proto::joaat(&model_name)) {
-        crate::debug::console_line(&format!("[mp] spawn request: spawned {model_name}"));
+        crate::debug::console_line(&format!("^2[mp] spawn request: spawned {model_name}"));
         eprintln!("[mp] spawn request: spawned {model_name}");
         game.pending_spawn = None;
         return;
@@ -3053,9 +3060,9 @@ fn spawn_wait_log(c: &mut Cmd, model_name: &str, since: Instant) {
     if ped == 0 || !c.exists(ped) {
         crate::debug::console_line(&format!("[mp] spawn {model_name}: waiting for player ped ({elapsed}s)"));
     } else if !model_ready(c, proto::joaat(model_name)) {
-        crate::debug::console_line(&format!("[mp] spawn {model_name}: HasModelLoaded still false after {elapsed}s — model/DLC not loading"));
+        crate::debug::console_line(&format!("^1[mp] spawn {model_name}: HasModelLoaded still false after {elapsed}s — model/DLC not loading"));
     } else {
-        crate::debug::console_line(&format!("[mp] spawn {model_name}: model loaded but CreateVehicle failed ({elapsed}s)"));
+        crate::debug::console_line(&format!("^1[mp] spawn {model_name}: model loaded but CreateVehicle failed ({elapsed}s)"));
     }
 }
 
@@ -3120,7 +3127,7 @@ fn sandbox_starter_vehicle(c: &mut Cmd, game: &mut Game) {
     let since = game.starter_since.unwrap();
     if since.elapsed() > Duration::from_secs(30) {
         game.starter_done = true;
-        crate::debug::console_line(&format!("[mp] sandbox starter vehicle: model {model_name} never loaded after 30 s (DLC not mounted / mod not installed?)"));
+        crate::debug::console_line(&format!("^1[mp] sandbox starter vehicle: model {model_name} never loaded after 30 s (DLC not mounted / mod not installed?)"));
         eprintln!("[mp] sandbox starter vehicle: model {model_name} never loaded (mod not installed?); giving up");
         return;
     }
@@ -3133,7 +3140,7 @@ fn sandbox_starter_vehicle(c: &mut Cmd, game: &mut Game) {
     }
     if try_spawn_vehicle(c, proto::joaat(&model_name)) {
         game.starter_done = true;
-        crate::debug::console_line(&format!("[mp] sandbox starter vehicle spawned: {model_name}"));
+        crate::debug::console_line(&format!("^2[mp] sandbox starter vehicle spawned: {model_name}"));
         eprintln!("[mp] sandbox starter vehicle spawned: {model_name}");
     }
 }

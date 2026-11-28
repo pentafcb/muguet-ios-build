@@ -1954,7 +1954,7 @@ struct ConsolePreviewView: View {
                     .buttonStyle(.plain)
             }
             ScrollView {
-                Text(logText.isEmpty ? "Console ready — type help for commands." : logText)
+                Text(logText.isEmpty ? AttributedString("Console ready — type help for commands.") : consoleColoredText(logText))
                     .font(.system(size: 9.5, design: .monospaced))
                     .lineSpacing(2)
                     .foregroundColor(Color(hex: "9fe8a9"))
@@ -4272,11 +4272,103 @@ public func muguetOpenMenu() {
 final class ConsoleScrollState: ObservableObject {
     @Published var autoScroll = true
 }
+
+// FiveM-style ^0-^9 color codes in console text. A code colors the
+// text after it until the next code; the code itself is never shown
+// (consumed, like FiveM). Color state resets at the start of every
+// line — each console line is its own message, so a red error line
+// never turns the following lines red. A ^ followed by a non-digit,
+// or a lone ^ at the end of a line, prints literally.
+struct ConsoleTextSegment {
+    let range: Range<String.Index> // in the visible (code-stripped) line
+    let color: Color?
+}
+
+func consoleCodeColor(_ digit: Character) -> Color {
+    switch digit {
+    case "0", "7": return Color(hex: "F0F0F0")
+    case "1": return Color(hex: "F44336")
+    case "2": return Color(hex: "4CAF50")
+    case "3": return Color(hex: "FFEB3B")
+    case "4": return Color(hex: "42A5F5")
+    case "5": return Color(hex: "03A9F4")
+    case "6": return Color(hex: "9C27B0")
+    case "8": return Color(hex: "FF5722")
+    case "9": return Color(hex: "9E9E9E")
+    default: return Color(hex: "F0F0F0")
+    }
+}
+
+// Split one raw log line into its visible text and its color runs.
+// Ranges are in the visible string, so find matches computed on the
+// visible text map onto the rendering with no shift.
+func consoleParseLine(_ line: String) -> (visible: String, segments: [ConsoleTextSegment]) {
+    var visible = ""
+    visible.reserveCapacity(line.count)
+    var raw: [(start: Int, end: Int, color: Color?)] = []
+    var color: Color? = nil
+    var segStart = 0
+    var i = line.startIndex
+    while i < line.endIndex {
+        if line[i] == "^" {
+            let next = line.index(after: i)
+            if next < line.endIndex, line[next] >= "0", line[next] <= "9" {
+                if visible.count > segStart {
+                    raw.append((segStart, visible.count, color))
+                }
+                color = consoleCodeColor(line[next])
+                segStart = visible.count
+                i = line.index(after: next)
+                continue
+            }
+        }
+        visible.append(line[i])
+        i = line.index(after: i)
+    }
+    if visible.count > segStart {
+        raw.append((segStart, visible.count, color))
+    }
+    let segments = raw.map { r in
+        let lo = visible.index(visible.startIndex, offsetBy: r.start)
+        let hi = visible.index(visible.startIndex, offsetBy: r.end)
+        return ConsoleTextSegment(range: lo..<hi, color: r.color)
+    }
+    return (visible, segments)
+}
+
+// A whole multi-line tail with its colors, for the launcher's console
+// preview. Runs without a code keep the view's own foreground color.
+func consoleColoredText(_ text: String) -> AttributedString {
+    var out = AttributedString()
+    for (idx, line) in text.components(separatedBy: "\n").enumerated() {
+        if idx > 0 { out += AttributedString("\n") }
+        let (visible, segments) = consoleParseLine(line)
+        var attr = AttributedString(visible)
+        for segment in segments {
+            guard let color = segment.color,
+                  let lo = AttributedString.Index(segment.range.lowerBound, within: attr),
+                  let hi = AttributedString.Index(segment.range.upperBound, within: attr) else { continue }
+            attr[lo..<hi].foregroundColor = color
+        }
+        out += attr
+    }
+    return out
+}
+
 struct ConsoleView: View {
     @State private var logText = ""
     @State private var input = ""
     @StateObject private var scrollState = ConsoleScrollState()
     @State private var pollTick = Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()
+    // VS Code-style find: magnifier in the header opens the bar below
+    // it. findIndex is the flat index across every match in the log;
+    // findAnchor is the character offset of the current match, so a
+    // growing log can keep the current match stable.
+    @State private var findOpen = false
+    @State private var findQuery = ""
+    @State private var findIndex = 0
+    @State private var findAnchor = 0
+    @FocusState private var findFocused: Bool
     var onClose: () -> Void
 
     var body: some View {
@@ -4295,6 +4387,10 @@ struct ConsoleView: View {
                             if scrollState.autoScroll { proxy.scrollTo("bottom", anchor: .bottom) }
                         }
                         .font(.subheadline)
+                        Button { toggleFind() } label: {
+                            Image(systemName: "magnifyingglass")
+                        }
+                        .font(.subheadline)
                         Button("Open log") { shareDiagnostics() }
                             .font(.subheadline)
                         Button("Close") { onClose() }
@@ -4303,17 +4399,59 @@ struct ConsoleView: View {
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
                     .background(Color.black.opacity(0.85))
-                    ScrollView {
-                        Text(logText.isEmpty ? "Console ready — type help for commands." : logText)
-                            .font(.system(.caption, design: .monospaced))
-                            .foregroundColor(.white.opacity(0.9))
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
-                            .id("bottom")
-                            .onChange(of: logText) { _ in
-                                if scrollState.autoScroll { proxy.scrollTo("bottom", anchor: .bottom) }
+                    // Find bar: one compact row — field, count, up,
+                    // down, close. Enter in the field steps down.
+                    if findOpen {
+                        HStack(spacing: 6) {
+                            Image(systemName: "magnifyingglass")
+                                .font(.subheadline)
+                                .foregroundColor(.white.opacity(0.7))
+                            TextField("Find in log", text: $findQuery)
+                                .font(.system(.subheadline, design: .monospaced))
+                                .foregroundColor(.white)
+                                .autocorrectionDisabled()
+                                .textInputAutocapitalization(.never)
+                                .focused($findFocused)
+                                .onSubmit { findStep(1, proxy: proxy) }
+                                .onChange(of: findQuery) { _ in findQueryChanged(proxy: proxy) }
+                            Text(findCountText)
+                                .font(.caption)
+                                .foregroundColor(.white.opacity(0.7))
+                                .fixedSize()
+                            Button { findStep(-1, proxy: proxy) } label: {
+                                Image(systemName: "chevron.up")
                             }
+                            .font(.subheadline)
+                            Button { findStep(1, proxy: proxy) } label: {
+                                Image(systemName: "chevron.down")
+                            }
+                            .font(.subheadline)
+                            Button { closeFind() } label: {
+                                Image(systemName: "xmark")
+                            }
+                            .font(.subheadline)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(Color.black.opacity(0.85))
+                    }
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 0) {
+                            ForEach(logLines.indices, id: \.self) { idx in
+                                Text(attributedLine(idx))
+                                    .font(.system(.caption, design: .monospaced))
+                                    .foregroundColor(.white.opacity(0.9))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .id(idx)
+                            }
+                            Color.clear.frame(height: 0).id("bottom")
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .onChange(of: logText) { _ in
+                            if scrollState.autoScroll { proxy.scrollTo("bottom", anchor: .bottom) }
+                            reanchorFind()
+                        }
                     }
                     .background(Color.black.opacity(0.85))
                     HStack(spacing: 8) {
@@ -4359,8 +4497,156 @@ struct ConsoleView: View {
         if cmd == "close" { onClose(); return }
         // A typed command wants its answer: resume live view so the
         // output appears at once instead of waiting behind the freeze.
-        if !scrollState.autoScroll { scrollState.autoScroll = true }
+        // But not while the find bar is open — searching freezes the
+        // log on purpose, and a command must not fight that.
+        if !scrollState.autoScroll && !findOpen { scrollState.autoScroll = true }
         poll()
+    }
+
+    // VS Code-style find over the log. Matches are case-insensitive
+    // ranges of findQuery inside each log line; findIndex is the flat
+    // index across all lines, so the count reads "3 of 12" and the
+    // chevrons wrap around at both ends.
+    var logLines: [String] {
+        logText.isEmpty ? ["Console ready — type help for commands."] : logText.components(separatedBy: "\n")
+    }
+
+    // Case-insensitive, non-overlapping matches of query in one line.
+    // Hand-rolled because String.ranges(of:options:) needs iOS 16
+    // and this app targets iOS 15.
+    func findRanges(_ query: String, in line: String) -> [Range<String.Index>] {
+        guard !query.isEmpty else { return [] }
+        var out: [Range<String.Index>] = []
+        var start = line.startIndex
+        while let range = line.range(of: query, options: [.caseInsensitive], range: start..<line.endIndex) {
+            out.append(range)
+            start = range.upperBound
+        }
+        return out
+    }
+
+    // Visible text: the ^N color codes are stripped, so find searches
+    // what the player actually sees — and the match ranges land on
+    // the same string the highlighting is built from, no shift.
+    var visibleLines: [String] {
+        logLines.map { consoleParseLine($0).visible }
+    }
+
+    var lineMatchRanges: [[Range<String.Index>]] {
+        visibleLines.map { findRanges(findQuery, in: $0) }
+    }
+
+    var findTotal: Int { lineMatchRanges.reduce(0) { $0 + $1.count } }
+
+    var findCountText: String {
+        if findQuery.isEmpty { return "" }
+        if findTotal == 0 { return "No results" }
+        return "\(min(findIndex, findTotal - 1) + 1) of \(findTotal)"
+    }
+
+    // Flat index -> (line, occurrence within the line).
+    func findPosition(_ index: Int) -> (line: Int, occurrence: Int)? {
+        var rest = index
+        for (line, ranges) in lineMatchRanges.enumerated() {
+            if rest < ranges.count { return (line, rest) }
+            rest -= ranges.count
+        }
+        return nil
+    }
+
+    // Character offset of the flat-index match inside logText, for
+    // keeping the current match stable when the log grows.
+    func findOffset(_ index: Int) -> Int? {
+        guard let pos = findPosition(index) else { return nil }
+        var offset = 0
+        for line in 0..<pos.line { offset += visibleLines[line].count + 1 }
+        let ranges = lineMatchRanges[pos.line]
+        offset += visibleLines[pos.line].distance(from: visibleLines[pos.line].startIndex, to: ranges[pos.occurrence].lowerBound)
+        return offset
+    }
+
+    // One log line, with its ^N foreground colors and every find
+    // match highlighted yellow and the current match orange. The
+    // highlight is computed on the visible text and painted on the
+    // same string, so the hidden codes can never shift it. The
+    // empty-log placeholder has no codes and no matches.
+    func attributedLine(_ idx: Int) -> AttributedString {
+        let (visible, segments) = consoleParseLine(logLines[idx])
+        var attr = AttributedString(visible)
+        for segment in segments {
+            guard let color = segment.color,
+                  let lo = AttributedString.Index(segment.range.lowerBound, within: attr),
+                  let hi = AttributedString.Index(segment.range.upperBound, within: attr) else { continue }
+            attr[lo..<hi].foregroundColor = color
+        }
+        guard !findQuery.isEmpty else { return attr }
+        // Global flat index of this line's first match.
+        var base = 0
+        for l in 0..<idx { base += lineMatchRanges[l].count }
+        for (occ, range) in lineMatchRanges[idx].enumerated() {
+            guard let lo = AttributedString.Index(range.lowerBound, within: attr),
+                  let hi = AttributedString.Index(range.upperBound, within: attr) else { continue }
+            attr[lo..<hi].backgroundColor = (base + occ == findIndex) ? .orange : .yellow
+        }
+        return attr
+    }
+
+    func toggleFind() {
+        if findOpen { closeFind() } else { openFind() }
+    }
+
+    func openFind() {
+        findOpen = true
+        findIndex = 0
+        findAnchor = 0
+        // Searching freezes the log (same rule as auto-scroll off):
+        // the matches must not move under the user's fingers.
+        scrollState.autoScroll = false
+        findFocused = true
+    }
+
+    func closeFind() {
+        findOpen = false
+        findQuery = ""
+        findIndex = 0
+        findAnchor = 0
+        // Auto-scroll stays exactly as the user left it: off, unless
+        // they turned it back on while the bar was open.
+    }
+
+    func findQueryChanged(proxy: ScrollViewProxy) {
+        findIndex = 0
+        findAnchor = findOffset(0) ?? 0
+        scrollToCurrentMatch(proxy: proxy)
+    }
+
+    func findStep(_ direction: Int, proxy: ScrollViewProxy) {
+        guard findTotal > 0 else { return }
+        findIndex = (findIndex + direction + findTotal) % findTotal
+        findAnchor = findOffset(findIndex) ?? 0
+        scrollToCurrentMatch(proxy: proxy)
+    }
+
+    func scrollToCurrentMatch(proxy: ScrollViewProxy) {
+        guard let pos = findPosition(findIndex) else { return }
+        proxy.scrollTo(pos.line, anchor: .center)
+    }
+
+    // The log grew (auto-scroll was turned back on while searching):
+    // keep the current match if it is still there, otherwise take
+    // the nearest one. Never scrolls — the highlight moves, the view
+    // stays where the user left it.
+    func reanchorFind() {
+        guard findOpen, !findQuery.isEmpty, findTotal > 0 else { return }
+        var best = 0
+        var bestDistance = Int.max
+        for index in 0..<findTotal {
+            guard let offset = findOffset(index) else { continue }
+            let distance = abs(offset - findAnchor)
+            if distance < bestDistance { bestDistance = distance; best = index }
+        }
+        findIndex = best
+        findAnchor = findOffset(best) ?? findAnchor
     }
 }
 
