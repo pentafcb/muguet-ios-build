@@ -3521,25 +3521,38 @@ impl Gpu {
         }
     }
 
-    // RAM tiers for the tracker and the smart cleanup. The jetsam line
-    // is ~2.7 GB footprint on an 8 GB phone (died at 2,701 MB with
-    // available memory at 56 MB), so the tiers act on the footprint,
-    // not only on available memory — available collapses in ~25 s once
-    // streaming starts, too fast to react to. Tier 1 watch (2.0 GB /
-    // 768 MB): purge every 5 s, tracker amber. Tier 2 pressure
-    // (2.3 GB / 384 MB): purge now, 30 FPS for 30 s. Tier 3 critical
-    // (2.55 GB / 192 MB): deepest purge; if the footprint is still
-    // critical 3 s after a purge, stop the game cleanly with a Low
-    // memory message instead of being jetsammed with no warning.
+    // RAM tiers for the tracker and the smart cleanup. They act on
+    // available memory, not on the footprint: available_memory() is
+    // os_proc_available_memory(), the headroom left before iOS jetsams
+    // THIS process — it already accounts for the increased-memory-limit
+    // entitlement, so a 2.7 GB footprint with 3.3 GB free is tier 0,
+    // not a crisis. The old footprint ladder (2.0/2.3/2.55 GB) was
+    // tuned for the ~2.7 GB jetsam line without the entitlement, and
+    // with the entitlement it paused the game forever: the footprint
+    // legitimately sits above 2.55 GB while the game runs, so the
+    // pause supervisor never saw tier 1 again and never resumed.
+    // Available can fall fast once streaming starts (~25 s from
+    // 384 MB to zero), but the 1 s tick plus the purge at tier 1, the
+    // 30 FPS cap at tier 2 and the pause at tier 3 still react inside
+    // that window — and unlike the footprint, available is the real
+    // distance to jetsam. The footprint ladder survives only as a
+    // fallback when there is no available-memory signal (non-iOS
+    // builds, where it is None). Tier 1 watch (768 MB free): purge
+    // every 5 s, tracker amber. Tier 2 pressure (384 MB free): purge
+    // now, 30 FPS for 30 s. Tier 3 critical (192 MB free): deepest
+    // purge; if still critical 3 s after a purge, pause the game
+    // until memory recovers.
     fn memory_tier(footprint_mb: u64, avail_mb: Option<u64>) -> u8 {
-        // avail_mb is None on non-iOS builds (available_memory() only
-        // exists on iOS): an unknown available must not read as 0 MB
-        // free, or the host build sits permanently at tier 3, caps
-        // itself at 30 FPS, and pauses/stops the game after a purge.
-        if footprint_mb >= 2550 || avail_mb.is_some_and(|a| a < 192) { 3 }
-        else if footprint_mb >= 2300 || avail_mb.is_some_and(|a| a < 384) { 2 }
-        else if footprint_mb >= 2000 || avail_mb.is_some_and(|a| a < 768) { 1 }
-        else { 0 }
+        match avail_mb {
+            Some(a) if a < 192 => 3,
+            Some(a) if a < 384 => 2,
+            Some(a) if a < 768 => 1,
+            Some(_) => 0,
+            None if footprint_mb >= 2550 => 3,
+            None if footprint_mb >= 2300 => 2,
+            None if footprint_mb >= 2000 => 1,
+            None => 0,
+        }
     }
 
     fn check_memory(&mut self) {
@@ -3700,7 +3713,12 @@ impl Gpu {
                 Some(_) => {}
                 None => { self.critical_since = Some(now); }
             }
-        } else if after < 2400 {
+        } else {
+            // Any non-critical reading resets the timer: with the
+            // entitlement the footprint legitimately stays above
+            // 2.4 GB, so a footprint-based reset would leave a stale
+            // timestamp and the next critical spell would pause at
+            // once instead of waiting out the 3 s grace.
             self.critical_since = None;
         }
     }
