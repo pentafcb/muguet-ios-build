@@ -937,6 +937,131 @@ pub struct Gpu {
 
 unsafe impl Send for Gpu {}
 
+
+// Post FX chain state: 3 pipelines + sampler + 64-byte uniform
+// + 2 quarter-res bloom textures, created once and reused. key is
+// (back-buffer id, width, height, bloom on): any change rebuilds
+// the bloom textures and bind groups. last_uniform is the 0xFF
+// sentinel until the first uniform upload.
+struct FxChain {
+    composite: RenderPipeline,
+    downsample: RenderPipeline,
+    blur: RenderPipeline,
+    sampler: Sampler,
+    uniform: Buffer,
+    bloom_a: Option<(Texture, TextureView)>,
+    bloom_b: Option<(Texture, TextureView)>,
+    bloom_format: TextureFormat,
+    key: (u32, u32, u32, bool),
+    composite_bg: Option<BindGroup>,
+    downsample_bg: Option<BindGroup>,
+    blur_bg: Option<BindGroup>,
+    last_uniform: [u8; 64],
+}
+
+// Fullscreen triangle, same shape as the blit shader.
+const FX_VS: &str = "@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f { var p = array<vec2f, 3>(vec2f(-1, -1), vec2f(3, -1), vec2f(-1, 3)); return vec4f(p[i], 0, 1); }";
+
+// Uniform block, byte-identical to fx::fx_uniform_bytes (64 bytes):
+// resolution, bloom_size, saturation, contrast, brightness,
+// sharpen, fxaa_span, vignette, bloom_strength, bloom_threshold,
+// flags, 3x pad. Built by explicit offsets in fx.rs, never by
+// casting a struct, so a Rust layout change cannot desync this.
+// Flags: 1 grade, 2 sharpen, 4 fxaa, 8 vignette, 16 bloom.
+const FX_PARAMS: &str = "struct FxParams { resolution: vec2f, bloom_size: vec2f, saturation: f32, contrast: f32, brightness: f32, sharpen: f32, fxaa_span: f32, vignette: f32, bloom_strength: f32, bloom_threshold: f32, flags: u32, _pad0: u32, _pad1: u32, _pad2: u32, }";
+const FX_COMPOSITE_BINDINGS: &str = "@group(0) @binding(0) var src_tex: texture_2d<f32>; @group(0) @binding(1) var samp: sampler; @group(0) @binding(2) var bloom_tex: texture_2d<f32>; @group(0) @binding(3) var<uniform> params: FxParams;";
+const FX_PLAIN_BINDINGS: &str = "@group(0) @binding(0) var src_tex: texture_2d<f32>; @group(0) @binding(1) var samp: sampler; @group(0) @binding(2) var<uniform> params: FxParams;";
+
+// Composite: the one fullscreen pass that reaches the screen.
+// Order is deliberate — FXAA first (it needs the raw image: edge
+// detection on a graded image misreads edges), then bloom add,
+// sharpen against the source neighbours, grade (pointwise), and
+// vignette (pointwise) last.
+const FX_COMPOSITE_FS: &str = "
+fn fx_luma(c: vec3f) -> f32 { return dot(c, vec3f(0.299, 0.587, 0.114)); }
+fn fxaa_filter(uv: vec2f) -> vec3f {
+    let texel = 1.0 / params.resolution;
+    let c_m = textureSample(src_tex, samp, uv).rgb;
+    let l_m = fx_luma(c_m);
+    let l_n = fx_luma(textureSample(src_tex, samp, uv + vec2f(0.0, -texel.y)).rgb);
+    let l_s = fx_luma(textureSample(src_tex, samp, uv + vec2f(0.0, texel.y)).rgb);
+    let l_w = fx_luma(textureSample(src_tex, samp, uv + vec2f(-texel.x, 0.0)).rgb);
+    let l_e = fx_luma(textureSample(src_tex, samp, uv + vec2f(texel.x, 0.0)).rgb);
+    let l_min = min(l_m, min(min(l_n, l_s), min(l_w, l_e)));
+    let l_max = max(l_m, max(max(l_n, l_s), max(l_w, l_e)));
+    let range = l_max - l_min;
+    if range < max(0.0312, l_max * 0.125) { return c_m; }
+    let l_nw = fx_luma(textureSample(src_tex, samp, uv + vec2f(-texel.x, -texel.y)).rgb);
+    let l_ne = fx_luma(textureSample(src_tex, samp, uv + vec2f(texel.x, -texel.y)).rgb);
+    let l_sw = fx_luma(textureSample(src_tex, samp, uv + vec2f(-texel.x, texel.y)).rgb);
+    let l_se = fx_luma(textureSample(src_tex, samp, uv + vec2f(texel.x, texel.y)).rgb);
+    var dir = vec2f((l_nw + l_ne) - (l_sw + l_se), (l_nw + l_sw) - (l_ne + l_se));
+    if length(dir) < 0.0001 { return c_m; }
+    dir = normalize(dir) * texel * params.fxaa_span;
+    let c_a = textureSample(src_tex, samp, uv + dir * 0.5).rgb;
+    let c_b = textureSample(src_tex, samp, uv - dir * 0.5).rgb;
+    let avg = (c_a + c_b) * 0.5;
+    let blend = clamp(abs(fx_luma(avg) - l_m) / range, 0.0, 1.0);
+    return mix(c_m, avg, blend * 0.75);
+}
+@fragment fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
+    let uv = pos.xy / params.resolution;
+    var col = textureSample(src_tex, samp, uv).rgb;
+    if (params.flags & 4u) != 0u { col = fxaa_filter(uv); }
+    if (params.flags & 16u) != 0u { col += textureSample(bloom_tex, samp, uv).rgb * params.bloom_strength; }
+    if (params.flags & 2u) != 0u {
+        let texel = 1.0 / params.resolution;
+        let avg = (textureSample(src_tex, samp, uv + vec2f(texel.x, 0.0)).rgb + textureSample(src_tex, samp, uv - vec2f(texel.x, 0.0)).rgb + textureSample(src_tex, samp, uv + vec2f(0.0, texel.y)).rgb + textureSample(src_tex, samp, uv - vec2f(0.0, texel.y)).rgb) * 0.25;
+        col += (col - avg) * params.sharpen;
+    }
+    if (params.flags & 1u) != 0u {
+        col += params.brightness;
+        col = (col - 0.5) * params.contrast + 0.5;
+        let luma = fx_luma(col);
+        col = mix(vec3f(luma), col, params.saturation);
+    }
+    if (params.flags & 8u) != 0u {
+        let d = distance(uv, vec2f(0.5, 0.5));
+        col *= 1.0 - params.vignette * smoothstep(0.45, 0.9, d);
+    }
+    return vec4f(clamp(col, vec3f(0.0), vec3f(1.0)), 1.0);
+}";
+
+// Downsample + bright-pass: a 2x2 box average of the full-res
+// source (each bloom texel covers 4x4 source texels) keeping only
+// what exceeds the threshold, so the blur adds a soft glow, not a
+// grey wash.
+const FX_DOWNSAMPLE_FS: &str = "
+@fragment fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
+    let uv = pos.xy / params.bloom_size;
+    let texel = 2.0 / params.resolution;
+    let c = (textureSample(src_tex, samp, uv + vec2f(-texel.x, -texel.y)).rgb + textureSample(src_tex, samp, uv + vec2f(texel.x, -texel.y)).rgb + textureSample(src_tex, samp, uv + vec2f(-texel.x, texel.y)).rgb + textureSample(src_tex, samp, uv + vec2f(texel.x, texel.y)).rgb) * 0.25;
+    let brightest = max(c.r, max(c.g, c.b));
+    let t = clamp((brightest - params.bloom_threshold) / max(1.0 - params.bloom_threshold, 0.001), 0.0, 1.0);
+    return vec4f(c * t, 1.0);
+}";
+
+// Blur: one 9-tap gaussian on the quarter-res bloom texture.
+// Weights sum to exactly 1 (0.25 + 4x0.125 + 4x0.0625), so the
+// pass never brightens or darkens on its own. One 3x3 blur at
+// quarter res is a ~12x12 blur at full res — soft enough for
+// bloom without a second separable pass.
+const FX_BLUR_FS: &str = "
+@fragment fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
+    let uv = pos.xy / params.bloom_size;
+    let t = 1.0 / params.bloom_size;
+    var c = textureSample(src_tex, samp, uv).rgb * 0.25;
+    c += textureSample(src_tex, samp, uv + vec2f(t.x, 0.0)).rgb * 0.125;
+    c += textureSample(src_tex, samp, uv - vec2f(t.x, 0.0)).rgb * 0.125;
+    c += textureSample(src_tex, samp, uv + vec2f(0.0, t.y)).rgb * 0.125;
+    c += textureSample(src_tex, samp, uv - vec2f(0.0, t.y)).rgb * 0.125;
+    c += textureSample(src_tex, samp, uv + vec2f(t.x, t.y)).rgb * 0.0625;
+    c += textureSample(src_tex, samp, uv + vec2f(-t.x, t.y)).rgb * 0.0625;
+    c += textureSample(src_tex, samp, uv + vec2f(t.x, -t.y)).rgb * 0.0625;
+    c += textureSample(src_tex, samp, uv - vec2f(t.x, t.y)).rgb * 0.0625;
+    return vec4f(c, 1.0);
+}";
+
 impl Gpu {
     fn new(mem: SharedMemory, ring: u64, _size: u64, dbg: u64, handoff: Option<SurfaceHandoff>) -> anyhow::Result<Gpu> {
         let (base, _) = mem_base_len(&mem);
@@ -3470,129 +3595,6 @@ impl Gpu {
         self.use_buf(res);
     }
 
-    // Post FX chain state: 3 pipelines + sampler + 64-byte uniform
-// + 2 quarter-res bloom textures, created once and reused. key is
-// (back-buffer id, width, height, bloom on): any change rebuilds
-// the bloom textures and bind groups. last_uniform is the 0xFF
-// sentinel until the first uniform upload.
-struct FxChain {
-    composite: RenderPipeline,
-    downsample: RenderPipeline,
-    blur: RenderPipeline,
-    sampler: Sampler,
-    uniform: Buffer,
-    bloom_a: Option<(Texture, TextureView)>,
-    bloom_b: Option<(Texture, TextureView)>,
-    bloom_format: TextureFormat,
-    key: (u32, u32, u32, bool),
-    composite_bg: Option<BindGroup>,
-    downsample_bg: Option<BindGroup>,
-    blur_bg: Option<BindGroup>,
-    last_uniform: [u8; 64],
-}
-
-// Fullscreen triangle, same shape as the blit shader.
-const FX_VS: &str = "@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f { var p = array<vec2f, 3>(vec2f(-1, -1), vec2f(3, -1), vec2f(-1, 3)); return vec4f(p[i], 0, 1); }";
-
-// Uniform block, byte-identical to fx::fx_uniform_bytes (64 bytes):
-// resolution, bloom_size, saturation, contrast, brightness,
-// sharpen, fxaa_span, vignette, bloom_strength, bloom_threshold,
-// flags, 3x pad. Built by explicit offsets in fx.rs, never by
-// casting a struct, so a Rust layout change cannot desync this.
-// Flags: 1 grade, 2 sharpen, 4 fxaa, 8 vignette, 16 bloom.
-const FX_PARAMS: &str = "struct FxParams { resolution: vec2f, bloom_size: vec2f, saturation: f32, contrast: f32, brightness: f32, sharpen: f32, fxaa_span: f32, vignette: f32, bloom_strength: f32, bloom_threshold: f32, flags: u32, _pad0: u32, _pad1: u32, _pad2: u32, }";
-const FX_COMPOSITE_BINDINGS: &str = "@group(0) @binding(0) var src_tex: texture_2d<f32>; @group(0) @binding(1) var samp: sampler; @group(0) @binding(2) var bloom_tex: texture_2d<f32>; @group(0) @binding(3) var<uniform> params: FxParams;";
-const FX_PLAIN_BINDINGS: &str = "@group(0) @binding(0) var src_tex: texture_2d<f32>; @group(0) @binding(1) var samp: sampler; @group(0) @binding(2) var<uniform> params: FxParams;";
-
-// Composite: the one fullscreen pass that reaches the screen.
-// Order is deliberate — FXAA first (it needs the raw image: edge
-// detection on a graded image misreads edges), then bloom add,
-// sharpen against the source neighbours, grade (pointwise), and
-// vignette (pointwise) last.
-const FX_COMPOSITE_FS: &str = "
-fn fx_luma(c: vec3f) -> f32 { return dot(c, vec3f(0.299, 0.587, 0.114)); }
-fn fxaa_filter(uv: vec2f) -> vec3f {
-    let texel = 1.0 / params.resolution;
-    let c_m = textureSample(src_tex, samp, uv).rgb;
-    let l_m = fx_luma(c_m);
-    let l_n = fx_luma(textureSample(src_tex, samp, uv + vec2f(0.0, -texel.y)).rgb);
-    let l_s = fx_luma(textureSample(src_tex, samp, uv + vec2f(0.0, texel.y)).rgb);
-    let l_w = fx_luma(textureSample(src_tex, samp, uv + vec2f(-texel.x, 0.0)).rgb);
-    let l_e = fx_luma(textureSample(src_tex, samp, uv + vec2f(texel.x, 0.0)).rgb);
-    let l_min = min(l_m, min(min(l_n, l_s), min(l_w, l_e)));
-    let l_max = max(l_m, max(max(l_n, l_s), max(l_w, l_e)));
-    let range = l_max - l_min;
-    if range < max(0.0312, l_max * 0.125) { return c_m; }
-    let l_nw = fx_luma(textureSample(src_tex, samp, uv + vec2f(-texel.x, -texel.y)).rgb);
-    let l_ne = fx_luma(textureSample(src_tex, samp, uv + vec2f(texel.x, -texel.y)).rgb);
-    let l_sw = fx_luma(textureSample(src_tex, samp, uv + vec2f(-texel.x, texel.y)).rgb);
-    let l_se = fx_luma(textureSample(src_tex, samp, uv + vec2f(texel.x, texel.y)).rgb);
-    var dir = vec2f((l_nw + l_ne) - (l_sw + l_se), (l_nw + l_sw) - (l_ne + l_se));
-    if length(dir) < 0.0001 { return c_m; }
-    dir = normalize(dir) * texel * params.fxaa_span;
-    let c_a = textureSample(src_tex, samp, uv + dir * 0.5).rgb;
-    let c_b = textureSample(src_tex, samp, uv - dir * 0.5).rgb;
-    let avg = (c_a + c_b) * 0.5;
-    let blend = clamp(abs(fx_luma(avg) - l_m) / range, 0.0, 1.0);
-    return mix(c_m, avg, blend * 0.75);
-}
-@fragment fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
-    let uv = pos.xy / params.resolution;
-    var col = textureSample(src_tex, samp, uv).rgb;
-    if (params.flags & 4u) != 0u { col = fxaa_filter(uv); }
-    if (params.flags & 16u) != 0u { col += textureSample(bloom_tex, samp, uv).rgb * params.bloom_strength; }
-    if (params.flags & 2u) != 0u {
-        let texel = 1.0 / params.resolution;
-        let avg = (textureSample(src_tex, samp, uv + vec2f(texel.x, 0.0)).rgb + textureSample(src_tex, samp, uv - vec2f(texel.x, 0.0)).rgb + textureSample(src_tex, samp, uv + vec2f(0.0, texel.y)).rgb + textureSample(src_tex, samp, uv - vec2f(0.0, texel.y)).rgb) * 0.25;
-        col += (col - avg) * params.sharpen;
-    }
-    if (params.flags & 1u) != 0u {
-        col += params.brightness;
-        col = (col - 0.5) * params.contrast + 0.5;
-        let luma = fx_luma(col);
-        col = mix(vec3f(luma), col, params.saturation);
-    }
-    if (params.flags & 8u) != 0u {
-        let d = distance(uv, vec2f(0.5, 0.5));
-        col *= 1.0 - params.vignette * smoothstep(0.45, 0.9, d);
-    }
-    return vec4f(clamp(col, vec3f(0.0), vec3f(1.0)), 1.0);
-}";
-
-// Downsample + bright-pass: a 2x2 box average of the full-res
-// source (each bloom texel covers 4x4 source texels) keeping only
-// what exceeds the threshold, so the blur adds a soft glow, not a
-// grey wash.
-const FX_DOWNSAMPLE_FS: &str = "
-@fragment fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
-    let uv = pos.xy / params.bloom_size;
-    let texel = 2.0 / params.resolution;
-    let c = (textureSample(src_tex, samp, uv + vec2f(-texel.x, -texel.y)).rgb + textureSample(src_tex, samp, uv + vec2f(texel.x, -texel.y)).rgb + textureSample(src_tex, samp, uv + vec2f(-texel.x, texel.y)).rgb + textureSample(src_tex, samp, uv + vec2f(texel.x, texel.y)).rgb) * 0.25;
-    let brightest = max(c.r, max(c.g, c.b));
-    let t = clamp((brightest - params.bloom_threshold) / max(1.0 - params.bloom_threshold, 0.001), 0.0, 1.0);
-    return vec4f(c * t, 1.0);
-}";
-
-// Blur: one 9-tap gaussian on the quarter-res bloom texture.
-// Weights sum to exactly 1 (0.25 + 4x0.125 + 4x0.0625), so the
-// pass never brightens or darkens on its own. One 3x3 blur at
-// quarter res is a ~12x12 blur at full res — soft enough for
-// bloom without a second separable pass.
-const FX_BLUR_FS: &str = "
-@fragment fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
-    let uv = pos.xy / params.bloom_size;
-    let t = 1.0 / params.bloom_size;
-    var c = textureSample(src_tex, samp, uv).rgb * 0.25;
-    c += textureSample(src_tex, samp, uv + vec2f(t.x, 0.0)).rgb * 0.125;
-    c += textureSample(src_tex, samp, uv - vec2f(t.x, 0.0)).rgb * 0.125;
-    c += textureSample(src_tex, samp, uv + vec2f(0.0, t.y)).rgb * 0.125;
-    c += textureSample(src_tex, samp, uv - vec2f(0.0, t.y)).rgb * 0.125;
-    c += textureSample(src_tex, samp, uv + vec2f(t.x, t.y)).rgb * 0.0625;
-    c += textureSample(src_tex, samp, uv + vec2f(-t.x, t.y)).rgb * 0.0625;
-    c += textureSample(src_tex, samp, uv + vec2f(t.x, -t.y)).rgb * 0.0625;
-    c += textureSample(src_tex, samp, uv - vec2f(t.x, t.y)).rgb * 0.0625;
-    return vec4f(c, 1.0);
-}";
 
     // Post FX chain (live state in fx.rs). While any effect is on,
     // present() runs this instead of the plain 1:1 blit: a bloom
@@ -3644,7 +3646,7 @@ const FX_BLUR_FS: &str = "
             // Build everything in locals first: simple_pipeline
             // borrows &self, and the chain slot is filled last.
             let dev = self.device.clone();
-            let sampler = dev.create_sampler(&SamplerDescriptor { label: Some("fx"), address_mode_u: AddressMode::ClampToEdge, address_mode_v: AddressMode::ClampToEdge, address_mode_w: AddressMode::ClampToEdge, mag_filter: FilterMode::Linear, min_filter: FilterMode::Linear, mipmap_filter: FilterMode::Nearest, ..Default::default() });
+            let sampler = dev.create_sampler(&SamplerDescriptor { label: Some("fx"), address_mode_u: AddressMode::ClampToEdge, address_mode_v: AddressMode::ClampToEdge, address_mode_w: AddressMode::ClampToEdge, mag_filter: FilterMode::Linear, min_filter: FilterMode::Linear, mipmap_filter: MipmapFilterMode::Nearest, ..Default::default() });
             let uniform = dev.create_buffer(&BufferDescriptor { label: Some("fx-uniform"), size: 64, usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST, mapped_at_creation: false });
             let composite = self.simple_pipeline(&self.fx_module([FX_PARAMS, FX_COMPOSITE_BINDINGS, FX_VS, FX_COMPOSITE_FS].concat()), Some(self.surface_format), None);
             let downsample = self.simple_pipeline(&self.fx_module([FX_PARAMS, FX_PLAIN_BINDINGS, FX_VS, FX_DOWNSAMPLE_FS].concat()), Some(bloom_format), None);
