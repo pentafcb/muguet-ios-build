@@ -449,6 +449,16 @@ fn merge_carvariations_meta(base: &str, mod_text: &str, models: &[String]) -> Op
     merge_meta(base, mod_text, models, "</variationData>", "modelName")
 }
 
+// carcols.meta has two lists, so it merges twice: the kit into
+// <Kits> (keyed by <kitName>) and the light set into <Lights>
+// (keyed by <name>). Either list may be empty; a missing close tag
+// in either list bails the whole merge so the base is never
+// half-merged.
+fn merge_carcols_meta(base: &str, mod_text: &str, kits: &[String], lights: &[String]) -> Option<String> {
+    let merged = merge_meta(base, mod_text, kits, "</Kits>", "kitName")?;
+    merge_meta(&merged, mod_text, lights, "</Lights>", "name")
+}
+
 /// True when the game's own vehicles.meta already registers this
 /// model (used by spawninfo so a merged model is not reported as
 /// "not in the game files").
@@ -586,6 +596,14 @@ fn base_carvariations_meta_path() -> PathBuf {
 
 fn mod_carvariations_meta_path(name: &str) -> PathBuf {
     packs_dir().join(name).join("carvariations.meta")
+}
+
+fn base_carcols_meta_path() -> PathBuf {
+    crate::config::game_dir().join("data/common/data/carcols.meta")
+}
+
+fn mod_carcols_meta_path(name: &str) -> PathBuf {
+    packs_dir().join(name).join("carcols.meta")
 }
 
 // Shared companion-meta install: merge the mod file's entries into
@@ -763,6 +781,57 @@ pub fn install_carvariations_meta(raw_name: &str, meta_path: &Path) -> Result<Ve
     )
 }
 
+// carcols.meta companion install. Same shape as the other metas,
+// but with two lists: the mod's kit merges into the game's
+// <Kits> (keyed by <kitName>) and its light set into <Lights>
+// (keyed by <name>), so the car gets its tuning kit and its
+// lights instead of the defaults. The kit name is NOT renamed to
+// the mod name — it is a kit identifier, not a model name. Both
+// sections are checked in the base up front, so a base missing
+// one of them is never half-merged.
+pub fn install_carcols_meta(raw_name: &str, meta_path: &Path) -> Result<Vec<String>> {
+    let name = check_mod_name(raw_name)?;
+    let text = read_meta_file(meta_path, "carcols.meta", "<CVehicleModelInfoVarGlobal>")?;
+    let kits = names_in(&text, "kitName");
+    let lights = names_in(&text, "name");
+    anyhow::ensure!(
+        !kits.is_empty() || !lights.is_empty(),
+        "carcols.meta has no <kitName> or <name> — nothing to install"
+    );
+    if let Ok(base) = std::fs::read_to_string(base_carcols_meta_path()) {
+        anyhow::ensure!(
+            base.contains("</Kits>") && base.contains("</Lights>"),
+            "base carcols.meta has no </Kits> or </Lights> — refusing to edit it"
+        );
+    }
+    let mut installed: Vec<String> = Vec::new();
+    if !kits.is_empty() {
+        installed.extend(install_companion_meta(
+            &name,
+            "carcols.meta",
+            &text,
+            &kits,
+            "</Kits>",
+            "kitName",
+            &base_carcols_meta_path(),
+            &mod_carcols_meta_path(&name),
+        )?);
+    }
+    if !lights.is_empty() {
+        installed.extend(install_companion_meta(
+            &name,
+            "carcols.meta",
+            &text,
+            &lights,
+            "</Lights>",
+            "name",
+            &base_carcols_meta_path(),
+            &mod_carcols_meta_path(&name),
+        )?);
+    }
+    Ok(installed)
+}
+
 /// True when the game's own handling.meta already registers this
 /// handling name (used by spawninfo so a merged handling is not
 /// reported as missing).
@@ -832,11 +901,24 @@ pub fn install_mod_folder(folder: &Path, name_hint: &str) -> Result<String> {
             "carvariations.meta",
             install_carvariations_meta as fn(&str, &Path) -> Result<Vec<String>>,
         ),
+        (
+            "carcols.meta",
+            install_carcols_meta as fn(&str, &Path) -> Result<Vec<String>>,
+        ),
     ] {
         if let Some(path) = find_named_in(folder, file) {
             let keys = install(&name, &path)?;
             installed.push(format!("{file} ({})", keys.join(", ")));
         }
+    }
+    // dlctext.meta is only three boolean flags for the DLC (has a
+    // global text file, has additional text, is a title update) —
+    // there is no list to merge and no base file to merge it into.
+    // Say so plainly instead of pretending it installed.
+    if find_named_in(folder, "dlctext.meta").is_some() {
+        crate::debug::console_line(
+            "[mods] dlctext.meta skipped — flags only, nothing to merge",
+        );
     }
     // The model files (.yft/.ytd) live in stream/ and can only load
     // from a dlc.rpf. Say so plainly instead of pretending they
@@ -884,6 +966,10 @@ pub fn remove_mod(raw_name: &str) -> Result<()> {
     let carvar_models = std::fs::read_to_string(mod_carvariations_meta_path(&name))
         .map(|t| model_names_in(&t))
         .unwrap_or_default();
+    let (carcols_kits, carcols_lights) =
+        std::fs::read_to_string(mod_carcols_meta_path(&name))
+            .map(|t| (names_in(&t, "kitName"), names_in(&t, "name")))
+            .unwrap_or_default();
     let dir = packs_dir().join(&name);
     if dir.exists() {
         anyhow::ensure!(dir.is_dir(), "expected a folder for {name}");
@@ -913,6 +999,26 @@ pub fn remove_mod(raw_name: &str) -> Result<()> {
     ) {
         crate::debug::console_line(&format!(
             "[mods] warning: could not strip {name} from base carvariations.meta: {e:#}"
+        ));
+    }
+    if let Err(e) = remove_meta_from(
+        &carcols_kits,
+        "kitName",
+        &base_carcols_meta_path(),
+        "carcols.meta",
+    ) {
+        crate::debug::console_line(&format!(
+            "[mods] warning: could not strip {name} from base carcols.meta: {e:#}"
+        ));
+    }
+    if let Err(e) = remove_meta_from(
+        &carcols_lights,
+        "name",
+        &base_carcols_meta_path(),
+        "carcols.meta",
+    ) {
+        crate::debug::console_line(&format!(
+            "[mods] warning: could not strip {name} from base carcols.meta: {e:#}"
         ));
     }
     crate::debug::console_line(&format!("[mods] removed {name}"));
@@ -1055,6 +1161,39 @@ mod ffi {
 
     #[no_mangle]
     pub extern "C" fn muguet_carvariations_meta_models() -> *const c_char {
+        LAST_META_MODELS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|s| s.as_ptr())
+            .unwrap_or(std::ptr::null())
+    }
+
+    // Same shape as the other companion-meta installs: the kit name
+    // and the light name land in the same LAST_META_MODELS slot, so
+    // Swift must read them out before installing another .meta.
+    #[no_mangle]
+    pub extern "C" fn muguet_install_carcols_meta(
+        mod_name: *const c_char,
+        meta_path: *const c_char,
+    ) -> bool {
+        let mod_name = cstr_or_empty(mod_name);
+        let meta_path = cstr_or_empty(meta_path);
+        match super::install_carcols_meta(&mod_name, std::path::Path::new(&meta_path)) {
+            Ok(keys) => {
+                *LAST_META_MODELS.lock().unwrap_or_else(|e| e.into_inner()) =
+                    CString::new(keys.join(", ")).ok();
+                true
+            }
+            Err(e) => {
+                set_error(format!("{e:#}"));
+                false
+            }
+        }
+    }
+
+    #[no_mangle]
+    pub extern "C" fn muguet_carcols_meta_models() -> *const c_char {
         LAST_META_MODELS
             .lock()
             .unwrap_or_else(|e| e.into_inner())

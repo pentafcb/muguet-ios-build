@@ -85,12 +85,15 @@ pub fn load_manifest_with_progress(data: &Path, mut progress: impl FnMut(usize, 
         // modify — so the manifest record is corrected in memory to
         // the real size and the engine reads the merged file.
         // handling.meta and carvariations.meta merge the same way.
+        // carcols.meta too: a mod's kit and light set grow it past
+        // the size in manifest.json.
         let merged_vehicles_meta = name.eq_ignore_ascii_case("common/data/levels/gta5/vehicles.meta");
         let merged_handling_meta = name.eq_ignore_ascii_case("common/data/handling.meta");
         let merged_carvariations_meta =
             name.eq_ignore_ascii_case("common/data/carvariations.meta");
+        let merged_carcols_meta = name.eq_ignore_ascii_case("common/data/carcols.meta");
         if metadata.len() != size {
-            anyhow::ensure!(optional_web_document(&name) || trimmed_dlc || merged_vehicles_meta || merged_handling_meta || merged_carvariations_meta,
+            anyhow::ensure!(optional_web_document(&name) || trimmed_dlc || merged_vehicles_meta || merged_handling_meta || merged_carvariations_meta || merged_carcols_meta,
                 "Game data incomplete: {name} (expected {size} bytes, found {} bytes). Import the complete game.zip again", metadata.len());
             record[1] = Value::from(metadata.len());
             adjusted += 1;

@@ -433,6 +433,10 @@ func muguet_handling_meta_models() -> UnsafePointer<CChar>?
 func muguet_install_carvariations_meta(_ modName: UnsafePointer<CChar>, _ metaPath: UnsafePointer<CChar>) -> Bool
 @_silgen_name("muguet_carvariations_meta_models")
 func muguet_carvariations_meta_models() -> UnsafePointer<CChar>?
+@_silgen_name("muguet_install_carcols_meta")
+func muguet_install_carcols_meta(_ modName: UnsafePointer<CChar>, _ metaPath: UnsafePointer<CChar>) -> Bool
+@_silgen_name("muguet_carcols_meta_models")
+func muguet_carcols_meta_models() -> UnsafePointer<CChar>?
 @_silgen_name("muguet_install_mod_folder")
 func muguet_install_mod_folder(_ folderPath: UnsafePointer<CChar>, _ nameHint: UnsafePointer<CChar>) -> Bool
 
@@ -1754,6 +1758,8 @@ struct ModNameSheet: View {
     @Binding var handlingFileName: String
     @Binding var carvariationsURL: URL?
     @Binding var carvariationsFileName: String
+    @Binding var carcolsURL: URL?
+    @Binding var carcolsFileName: String
     var onCancel: () -> Void
     var onInstall: () -> Void
 
@@ -1828,6 +1834,23 @@ struct ModNameSheet: View {
                 Text("Optional. Pick the mod's carvariations.meta here and the launcher merges its colors into the game's carvariations.meta — otherwise the car spawns with default colors.")
                     .font(.system(size: 12)).foregroundColor(.white.opacity(0.55))
             }
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("carcols.meta").font(.system(size: 13, weight: .semibold)).foregroundColor(.white)
+                    Spacer()
+                    if !carcolsFileName.isEmpty {
+                        Text(carcolsFileName).font(.system(size: 12)).foregroundColor(.white.opacity(0.55)).lineLimit(1)
+                    }
+                    Button(carcolsFileName.isEmpty ? "Choose…" : "Change…") { pickingMetaKind = "carcols"; pickingMeta = true }
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(Color(hex: "0B0D12"))
+                        .padding(.horizontal, 12).padding(.vertical, 7)
+                        .background(Capsule().fill(Color.white))
+                        .buttonStyle(.plain)
+                }
+                Text("Optional. Pick the mod's carcols.meta here and the launcher merges its tuning kit and lights into the game's carcols.meta — otherwise the car has no mod kit at LS Customs and stock lights.")
+                    .font(.system(size: 12)).foregroundColor(.white.opacity(0.55))
+            }
             HStack(spacing: 10) {
                 Button("Cancel", action: onCancel)
                     .font(.system(size: 15, weight: .semibold))
@@ -1859,6 +1882,9 @@ struct ModNameSheet: View {
                 case "carvariations":
                     carvariationsURL = url
                     carvariationsFileName = url.lastPathComponent
+                case "carcols":
+                    carcolsURL = url
+                    carcolsFileName = url.lastPathComponent
                 default:
                     metaURL = url
                     metaFileName = url.lastPathComponent
@@ -1897,6 +1923,8 @@ struct CLSettingsPanel: View {
     @State private var modHandlingFileName = ""
     @State private var modCarvariationsURL: URL?
     @State private var modCarvariationsFileName = ""
+    @State private var modCarcolsURL: URL?
+    @State private var modCarcolsFileName = ""
     @State private var pickingFolder = false
     @State private var pickingMetaFor: String?
     @State private var pickingMeta = false
@@ -2029,7 +2057,7 @@ struct CLSettingsPanel: View {
             Button("Cancel", role: .cancel) { modToDelete = nil }
         } message: {
             if let name = modToDelete {
-                Text("This deletes the \(name) folder and its line in dlcList.xml, and removes its vehicles.meta, handling.meta and carvariations.meta entries from the game's files. Other mods are not touched.")
+                Text("This deletes the \(name) folder and its line in dlcList.xml, and removes its vehicles.meta, handling.meta, carvariations.meta and carcols.meta entries from the game's files. Other mods are not touched.")
             }
         }
     }
@@ -2419,7 +2447,7 @@ struct CLSettingsPanel: View {
                 Text("◆ MODS")
                     .font(.system(size: 11, weight: .black)).kerning(1.0).foregroundColor(.white)
                 webGroup {
-                    Text("Add-on DLC packs (dlc.rpf). Install a mod zip, a bare dlc.rpf, or a whole mod folder (FiveM resource layout: dlc.rpf plus loose .meta files) and the game will mount it. If the pack's own .meta files cannot be read, pick them — vehicles.meta, handling.meta and carvariations.meta are merged into the game's own files so the vehicle can spawn with its handling and colors. The game reads the mod list at launch — restart the game after installing or removing a mod.")
+                    Text("Add-on DLC packs (dlc.rpf). Install a mod zip, a bare dlc.rpf, or a whole mod folder (FiveM resource layout: dlc.rpf plus loose .meta files) and the game will mount it. If the pack's own .meta files cannot be read, pick them — vehicles.meta, handling.meta, carvariations.meta and carcols.meta are merged into the game's own files so the vehicle can spawn with its handling, colors, tuning kit and lights. The game reads the mod list at launch — restart the game after installing or removing a mod.")
                         .font(.system(size: 10)).foregroundColor(muguetMuted).fixedSize(horizontal: false, vertical: true)
                     if installedMods.isEmpty {
                         Text("No add-on mods installed. The 11 built-in packs are not listed here.")
@@ -2490,7 +2518,7 @@ struct CLSettingsPanel: View {
                     // cannot black-screen; it appears as soon as
                     // installModFile stashes the picked URL.
                     if let url = modNameSheetURL {
-                        ModNameSheet(name: $modNameText, modelName: $modModelText, metaURL: $modMetaURL, metaFileName: $modMetaFileName, handlingURL: $modHandlingURL, handlingFileName: $modHandlingFileName, carvariationsURL: $modCarvariationsURL, carvariationsFileName: $modCarvariationsFileName, onCancel: {
+                        ModNameSheet(name: $modNameText, modelName: $modModelText, metaURL: $modMetaURL, metaFileName: $modMetaFileName, handlingURL: $modHandlingURL, handlingFileName: $modHandlingFileName, carvariationsURL: $modCarvariationsURL, carvariationsFileName: $modCarvariationsFileName, carcolsURL: $modCarcolsURL, carcolsFileName: $modCarcolsFileName, onCancel: {
                             modNameSheetURL = nil
                             modMetaURL = nil
                             modMetaFileName = ""
@@ -2498,12 +2526,15 @@ struct CLSettingsPanel: View {
                             modHandlingFileName = ""
                             modCarvariationsURL = nil
                             modCarvariationsFileName = ""
+                            modCarcolsURL = nil
+                            modCarcolsFileName = ""
                         }, onInstall: {
                             let folder = modNameText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
                             let model = modModelText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
                             let meta = modMetaURL
                             let handling = modHandlingURL
                             let carvariations = modCarvariationsURL
+                            let carcols = modCarcolsURL
                             modNameSheetURL = nil
                             modMetaURL = nil
                             modMetaFileName = ""
@@ -2511,7 +2542,9 @@ struct CLSettingsPanel: View {
                             modHandlingFileName = ""
                             modCarvariationsURL = nil
                             modCarvariationsFileName = ""
-                            runModInstall(url: url, name: folder, modelName: model, metaURL: meta, handlingURL: handling, carvariationsURL: carvariations)
+                            modCarcolsURL = nil
+                            modCarcolsFileName = ""
+                            runModInstall(url: url, name: folder, modelName: model, metaURL: meta, handlingURL: handling, carvariationsURL: carvariations, carcolsURL: carcols)
                         })
                         .clipShape(RoundedRectangle(cornerRadius: 12))
                         .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.15), lineWidth: 1))
@@ -2643,8 +2676,9 @@ struct CLSettingsPanel: View {
     // Install a .meta for an already-installed mod (META button on
     // its row): the mod does not have to be reinstalled. The picked
     // file's name decides which merge runs — vehicles.meta,
-    // handling.meta or carvariations.meta — so one button covers all
-    // three; anything else is refused with a plain message.
+    // handling.meta, carvariations.meta or carcols.meta — so one
+    // button covers all four; anything else is refused with a plain
+    // message.
     private func runMetaInstall(mod: String, url: URL) {
         let file = url.lastPathComponent.lowercased()
         let label: String
@@ -2659,12 +2693,16 @@ struct CLSettingsPanel: View {
             label = "carvariations.meta"
             install = muguet_install_carvariations_meta
             modelsFn = muguet_carvariations_meta_models
+        case "carcols.meta":
+            label = "carcols.meta"
+            install = muguet_install_carcols_meta
+            modelsFn = muguet_carcols_meta_models
         case "vehicles.meta":
             label = "vehicles.meta"
             install = muguet_install_vehicles_meta
             modelsFn = muguet_vehicles_meta_models
         default:
-            modsStatus = "Not a supported .meta — pick vehicles.meta, handling.meta or carvariations.meta."
+            modsStatus = "Not a supported .meta — pick vehicles.meta, handling.meta, carvariations.meta or carcols.meta."
             return
         }
         modsWorking = true
@@ -2688,7 +2726,7 @@ struct CLSettingsPanel: View {
         }
     }
 
-    private func runModInstall(url: URL, name: String, modelName: String = "", metaURL: URL? = nil, handlingURL: URL? = nil, carvariationsURL: URL? = nil) {
+    private func runModInstall(url: URL, name: String, modelName: String = "", metaURL: URL? = nil, handlingURL: URL? = nil, carvariationsURL: URL? = nil, carcolsURL: URL? = nil) {
         modsWorking = true
         modsStatus = "Installing…"
         DispatchQueue.global(qos: .userInitiated).async {
@@ -2718,6 +2756,7 @@ struct CLSettingsPanel: View {
                 installMeta("vehicles.meta", metaURL, muguet_install_vehicles_meta, muguet_vehicles_meta_models)
                 installMeta("handling.meta", handlingURL, muguet_install_handling_meta, muguet_handling_meta_models)
                 installMeta("carvariations.meta", carvariationsURL, muguet_install_carvariations_meta, muguet_carvariations_meta_models)
+                installMeta("carcols.meta", carcolsURL, muguet_install_carcols_meta, muguet_carcols_meta_models)
             }
             DispatchQueue.main.async {
                 modsWorking = false
