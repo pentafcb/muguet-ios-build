@@ -191,9 +191,11 @@ pub fn patch(wasm: &[u8], wanted: &[(&str, &str)]) -> Result<Vec<u8>> {
         exports.push(("muguet:malloc".to_string(), malloc));
     }
     for (export, func) in wanted {
-        match by_name.get(*func) {
-            Some(&i) => exports.push((format!("mp:{export}"), i)),
-            None => eprintln!("[patch] {func} not found; multiplayer will skip it"),
+        // Silently skip natives the game code does not export:
+        // multiplayer works without them, and a missing one only
+        // ever printed noise in the build log.
+        if let Some(&i) = by_name.get(*func) {
+            exports.push((format!("mp:{export}"), i));
         }
     }
     // Guessing global index 1 when the wasm has no __tls_base used to
