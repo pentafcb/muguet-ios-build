@@ -425,6 +425,16 @@ func muguet_mod_name() -> UnsafePointer<CChar>?
 func muguet_install_vehicles_meta(_ modName: UnsafePointer<CChar>, _ metaPath: UnsafePointer<CChar>) -> Bool
 @_silgen_name("muguet_vehicles_meta_models")
 func muguet_vehicles_meta_models() -> UnsafePointer<CChar>?
+@_silgen_name("muguet_install_handling_meta")
+func muguet_install_handling_meta(_ modName: UnsafePointer<CChar>, _ metaPath: UnsafePointer<CChar>) -> Bool
+@_silgen_name("muguet_handling_meta_models")
+func muguet_handling_meta_models() -> UnsafePointer<CChar>?
+@_silgen_name("muguet_install_carvariations_meta")
+func muguet_install_carvariations_meta(_ modName: UnsafePointer<CChar>, _ metaPath: UnsafePointer<CChar>) -> Bool
+@_silgen_name("muguet_carvariations_meta_models")
+func muguet_carvariations_meta_models() -> UnsafePointer<CChar>?
+@_silgen_name("muguet_install_mod_folder")
+func muguet_install_mod_folder(_ folderPath: UnsafePointer<CChar>, _ nameHint: UnsafePointer<CChar>) -> Bool
 
 final class Importer: ObservableObject {
     static let shared = Importer()
@@ -1138,11 +1148,15 @@ struct DocumentPicker: UIViewControllerRepresentable {
     // The game import takes .zip only; the Mods section passes
     // [.zip, .rpf] so a bare dlc.rpf is tappable too.
     var contentTypes: [UTType] = [UTType.zip]
+    // Folders cannot be copied: a folder pick opens the original
+    // in place (asCopy: false) and the caller holds security-scoped
+    // access while Rust reads it.
+    var copy: Bool = true
     var onPick: (URL) -> Void
     var onError: (String) -> Void
 
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
-        let picker = UIDocumentPickerViewController(forOpeningContentTypes: contentTypes, asCopy: true)
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: contentTypes, asCopy: copy)
         picker.delegate = context.coordinator
         picker.allowsMultipleSelection = false
         return picker
@@ -1736,10 +1750,15 @@ struct ModNameSheet: View {
     @Binding var modelName: String
     @Binding var metaURL: URL?
     @Binding var metaFileName: String
+    @Binding var handlingURL: URL?
+    @Binding var handlingFileName: String
+    @Binding var carvariationsURL: URL?
+    @Binding var carvariationsFileName: String
     var onCancel: () -> Void
     var onInstall: () -> Void
 
     @State private var pickingMeta = false
+    @State private var pickingMetaKind = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -1765,7 +1784,7 @@ struct ModNameSheet: View {
                     if !metaFileName.isEmpty {
                         Text(metaFileName).font(.system(size: 12)).foregroundColor(.white.opacity(0.55)).lineLimit(1)
                     }
-                    Button(metaFileName.isEmpty ? "Choose…" : "Change…") { pickingMeta = true }
+                    Button(metaFileName.isEmpty ? "Choose…" : "Change…") { pickingMetaKind = "vehicles"; pickingMeta = true }
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundColor(Color(hex: "0B0D12"))
                         .padding(.horizontal, 12).padding(.vertical, 7)
@@ -1773,6 +1792,40 @@ struct ModNameSheet: View {
                         .buttonStyle(.plain)
                 }
                 Text("Optional. Some packs ship a vehicles.meta inside the .rpf that the game cannot read — if the model will not spawn, pick the mod's vehicles.meta here and the launcher merges its models into the game's vehicles.meta.")
+                    .font(.system(size: 12)).foregroundColor(.white.opacity(0.55))
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("handling.meta").font(.system(size: 13, weight: .semibold)).foregroundColor(.white)
+                    Spacer()
+                    if !handlingFileName.isEmpty {
+                        Text(handlingFileName).font(.system(size: 12)).foregroundColor(.white.opacity(0.55)).lineLimit(1)
+                    }
+                    Button(handlingFileName.isEmpty ? "Choose…" : "Change…") { pickingMetaKind = "handling"; pickingMeta = true }
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(Color(hex: "0B0D12"))
+                        .padding(.horizontal, 12).padding(.vertical, 7)
+                        .background(Capsule().fill(Color.white))
+                        .buttonStyle(.plain)
+                }
+                Text("Optional. Without the mod's handling the game traps while loading once the model is registered — pick the mod's handling.meta here and the launcher merges it into the game's handling.meta.")
+                    .font(.system(size: 12)).foregroundColor(.white.opacity(0.55))
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("carvariations.meta").font(.system(size: 13, weight: .semibold)).foregroundColor(.white)
+                    Spacer()
+                    if !carvariationsFileName.isEmpty {
+                        Text(carvariationsFileName).font(.system(size: 12)).foregroundColor(.white.opacity(0.55)).lineLimit(1)
+                    }
+                    Button(carvariationsFileName.isEmpty ? "Choose…" : "Change…") { pickingMetaKind = "carvariations"; pickingMeta = true }
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(Color(hex: "0B0D12"))
+                        .padding(.horizontal, 12).padding(.vertical, 7)
+                        .background(Capsule().fill(Color.white))
+                        .buttonStyle(.plain)
+                }
+                Text("Optional. Pick the mod's carvariations.meta here and the launcher merges its colors into the game's carvariations.meta — otherwise the car spawns with default colors.")
                     .font(.system(size: 12)).foregroundColor(.white.opacity(0.55))
             }
             HStack(spacing: 10) {
@@ -1799,8 +1852,17 @@ struct ModNameSheet: View {
         // from a button tap, never in the same turn as a dismissal.
         .sheet(isPresented: $pickingMeta) {
             DocumentPicker(isPresented: $pickingMeta, contentTypes: [UTType(tag: "meta", tagClass: .filenameExtension, conformingTo: .data) ?? UTType.data], onPick: { url in
-                metaURL = url
-                metaFileName = url.lastPathComponent
+                switch pickingMetaKind {
+                case "handling":
+                    handlingURL = url
+                    handlingFileName = url.lastPathComponent
+                case "carvariations":
+                    carvariationsURL = url
+                    carvariationsFileName = url.lastPathComponent
+                default:
+                    metaURL = url
+                    metaFileName = url.lastPathComponent
+                }
             }, onError: { _ in })
         }
     }
@@ -1831,6 +1893,11 @@ struct CLSettingsPanel: View {
     @State private var modModelText = ""
     @State private var modMetaURL: URL?
     @State private var modMetaFileName = ""
+    @State private var modHandlingURL: URL?
+    @State private var modHandlingFileName = ""
+    @State private var modCarvariationsURL: URL?
+    @State private var modCarvariationsFileName = ""
+    @State private var pickingFolder = false
     @State private var pickingMetaFor: String?
     @State private var pickingMeta = false
     @State private var modToDelete: String?
@@ -1928,6 +1995,18 @@ struct CLSettingsPanel: View {
                 message.withCString { muguet_debug_log($0) }
             })
         }
+        // Whole-folder install (FiveM resource layout): the folder
+        // name is the mod name, so there is no name prompt. The
+        // folder opens in place, not as a copy — Rust reads it
+        // directly while the pick holds security-scoped access.
+        .sheet(isPresented: $pickingFolder) {
+            DocumentPicker(isPresented: $pickingFolder, contentTypes: [UTType.folder], copy: false, onPick: { url in
+                runFolderInstall(url: url)
+            }, onError: { message in
+                modsStatus = "Could not pick a folder: \(message)"
+                message.withCString { muguet_debug_log($0) }
+            })
+        }
         // Meta picker for a mod that is already installed (META
         // button on its row): no follow-up sheet, the pick installs
         // the .meta straight away.
@@ -1950,7 +2029,7 @@ struct CLSettingsPanel: View {
             Button("Cancel", role: .cancel) { modToDelete = nil }
         } message: {
             if let name = modToDelete {
-                Text("This deletes the \(name) folder and its line in dlcList.xml, and removes its vehicles.meta models from the game's vehicles.meta. Other mods are not touched.")
+                Text("This deletes the \(name) folder and its line in dlcList.xml, and removes its vehicles.meta, handling.meta and carvariations.meta entries from the game's files. Other mods are not touched.")
             }
         }
     }
@@ -2340,7 +2419,7 @@ struct CLSettingsPanel: View {
                 Text("◆ MODS")
                     .font(.system(size: 11, weight: .black)).kerning(1.0).foregroundColor(.white)
                 webGroup {
-                    Text("Add-on DLC packs (dlc.rpf). Install a mod zip or a bare dlc.rpf and the game will mount it. If the pack's own vehicles.meta cannot be read, pick the mod's vehicles.meta file — the launcher merges its models into the game's vehicles.meta so the vehicle can spawn. The game reads the mod list at launch — restart the game after installing or removing a mod.")
+                    Text("Add-on DLC packs (dlc.rpf). Install a mod zip, a bare dlc.rpf, or a whole mod folder (FiveM resource layout: dlc.rpf plus loose .meta files) and the game will mount it. If the pack's own .meta files cannot be read, pick them — vehicles.meta, handling.meta and carvariations.meta are merged into the game's own files so the vehicle can spawn with its handling and colors. The game reads the mod list at launch — restart the game after installing or removing a mod.")
                         .font(.system(size: 10)).foregroundColor(muguetMuted).fixedSize(horizontal: false, vertical: true)
                     if installedMods.isEmpty {
                         Text("No add-on mods installed. The 11 built-in packs are not listed here.")
@@ -2375,18 +2454,32 @@ struct CLSettingsPanel: View {
                             }
                         }
                     }
-                    Button(action: { pickingMod = true }) {
-                        HStack {
-                            Image(systemName: "plus")
-                            Text("Add Mod…")
+                    HStack(spacing: 10) {
+                        Button(action: { pickingMod = true }) {
+                            HStack {
+                                Image(systemName: "plus")
+                                Text("Add Mod…")
+                            }
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundColor(Color(hex: "0B0D12"))
+                            .padding(.horizontal, 16).padding(.vertical, 10)
+                            .background(Capsule().fill(Color.white))
                         }
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundColor(Color(hex: "0B0D12"))
-                        .padding(.horizontal, 16).padding(.vertical, 10)
-                        .background(Capsule().fill(Color.white))
+                        .buttonStyle(.plain)
+                        .disabled(modsWorking)
+                        Button(action: { pickingFolder = true }) {
+                            HStack {
+                                Image(systemName: "folder.badge.plus")
+                                Text("Add Folder…")
+                            }
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundColor(Color(hex: "0B0D12"))
+                            .padding(.horizontal, 16).padding(.vertical, 10)
+                            .background(Capsule().fill(Color.white))
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(modsWorking)
                     }
-                    .buttonStyle(.plain)
-                    .disabled(modsWorking)
                     // Bare .rpf name prompt, inline in the Mods
                     // section — NOT a sheet. Presenting it as a
                     // sheet blacked the screen on three tries
@@ -2397,18 +2490,28 @@ struct CLSettingsPanel: View {
                     // cannot black-screen; it appears as soon as
                     // installModFile stashes the picked URL.
                     if let url = modNameSheetURL {
-                        ModNameSheet(name: $modNameText, modelName: $modModelText, metaURL: $modMetaURL, metaFileName: $modMetaFileName, onCancel: {
+                        ModNameSheet(name: $modNameText, modelName: $modModelText, metaURL: $modMetaURL, metaFileName: $modMetaFileName, handlingURL: $modHandlingURL, handlingFileName: $modHandlingFileName, carvariationsURL: $modCarvariationsURL, carvariationsFileName: $modCarvariationsFileName, onCancel: {
                             modNameSheetURL = nil
                             modMetaURL = nil
                             modMetaFileName = ""
+                            modHandlingURL = nil
+                            modHandlingFileName = ""
+                            modCarvariationsURL = nil
+                            modCarvariationsFileName = ""
                         }, onInstall: {
                             let folder = modNameText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
                             let model = modModelText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
                             let meta = modMetaURL
+                            let handling = modHandlingURL
+                            let carvariations = modCarvariationsURL
                             modNameSheetURL = nil
                             modMetaURL = nil
                             modMetaFileName = ""
-                            runModInstall(url: url, name: folder, modelName: model, metaURL: meta)
+                            modHandlingURL = nil
+                            modHandlingFileName = ""
+                            modCarvariationsURL = nil
+                            modCarvariationsFileName = ""
+                            runModInstall(url: url, name: folder, modelName: model, metaURL: meta, handlingURL: handling, carvariationsURL: carvariations)
                         })
                         .clipShape(RoundedRectangle(cornerRadius: 12))
                         .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.15), lineWidth: 1))
@@ -2537,31 +2640,55 @@ struct CLSettingsPanel: View {
     // before. The folder name always goes to Rust for the dlcPacks
     // path and the dlcList.xml line; only the sandboxVehicles entry
     // takes the model name.
-    // Install a vehicles.meta for an already-installed mod (META
-    // button on its row): the mod does not have to be reinstalled.
+    // Install a .meta for an already-installed mod (META button on
+    // its row): the mod does not have to be reinstalled. The picked
+    // file's name decides which merge runs — vehicles.meta,
+    // handling.meta or carvariations.meta — so one button covers all
+    // three; anything else is refused with a plain message.
     private func runMetaInstall(mod: String, url: URL) {
+        let file = url.lastPathComponent.lowercased()
+        let label: String
+        let install: (UnsafePointer<CChar>, UnsafePointer<CChar>) -> Bool
+        let modelsFn: () -> UnsafePointer<CChar>?
+        switch file {
+        case "handling.meta":
+            label = "handling.meta"
+            install = muguet_install_handling_meta
+            modelsFn = muguet_handling_meta_models
+        case "carvariations.meta":
+            label = "carvariations.meta"
+            install = muguet_install_carvariations_meta
+            modelsFn = muguet_carvariations_meta_models
+        case "vehicles.meta":
+            label = "vehicles.meta"
+            install = muguet_install_vehicles_meta
+            modelsFn = muguet_vehicles_meta_models
+        default:
+            modsStatus = "Not a supported .meta — pick vehicles.meta, handling.meta or carvariations.meta."
+            return
+        }
         modsWorking = true
-        modsStatus = "Installing vehicles.meta…"
+        modsStatus = "Installing \(label)…"
         DispatchQueue.global(qos: .userInitiated).async {
             let ok = mod.withCString { m in
-                url.path.withCString { p in muguet_install_vehicles_meta(m, p) }
+                url.path.withCString { p in install(m, p) }
             }
-            let models = muguet_vehicles_meta_models().map { String(cString: $0) } ?? ""
-            let err = muguet_mod_error().map { String(cString: $0) } ?? "vehicles.meta install failed."
+            let models = modelsFn().map { String(cString: $0) } ?? ""
+            let err = muguet_mod_error().map { String(cString: $0) } ?? "\(label) install failed."
             DispatchQueue.main.async {
                 modsWorking = false
                 if ok {
                     modsStatus = models.isEmpty
-                        ? "vehicles.meta installed for \(mod). Restart the game to use it."
-                        : "vehicles.meta installed for \(mod): \(models). Restart the game to use it."
+                        ? "\(label) installed for \(mod). Restart the game to use it."
+                        : "\(label) installed for \(mod): \(models). Restart the game to use it."
                 } else {
-                    modsStatus = "vehicles.meta install failed: \(err)"
+                    modsStatus = "\(label) install failed: \(err)"
                 }
             }
         }
     }
 
-    private func runModInstall(url: URL, name: String, modelName: String = "", metaURL: URL? = nil) {
+    private func runModInstall(url: URL, name: String, modelName: String = "", metaURL: URL? = nil, handlingURL: URL? = nil, carvariationsURL: URL? = nil) {
         modsWorking = true
         modsStatus = "Installing…"
         DispatchQueue.global(qos: .userInitiated).async {
@@ -2570,21 +2697,27 @@ struct CLSettingsPanel: View {
             }
             let installed = muguet_mod_name().map { String(cString: $0) } ?? ""
             let err = muguet_mod_error().map { String(cString: $0) } ?? "Install failed."
-            // A vehicles.meta picked in the name sheet installs right
+            // Each .meta picked in the name sheet installs right
             // after the .rpf, in the same background turn, so the
-            // status can report both parts at once.
+            // status can report all parts at once.
             var metaNote = ""
-            if ok, !installed.isEmpty, let metaURL {
+            func installMeta(_ label: String, _ picked: URL?, _ install: (UnsafePointer<CChar>, UnsafePointer<CChar>) -> Bool, _ modelsFn: () -> UnsafePointer<CChar>?) {
+                guard let picked else { return }
                 let metaOk = installed.withCString { m in
-                    metaURL.path.withCString { p in muguet_install_vehicles_meta(m, p) }
+                    picked.path.withCString { p in install(m, p) }
                 }
-                let models = muguet_vehicles_meta_models().map { String(cString: $0) } ?? ""
+                let models = modelsFn().map { String(cString: $0) } ?? ""
                 if metaOk {
-                    metaNote = models.isEmpty ? " vehicles.meta registered." : " vehicles.meta registered \(models)."
+                    metaNote += models.isEmpty ? " \(label) registered." : " \(label) registered \(models)."
                 } else {
-                    let metaErr = muguet_mod_error().map { String(cString: $0) } ?? "vehicles.meta install failed."
-                    metaNote = " vehicles.meta failed: \(metaErr)"
+                    let metaErr = muguet_mod_error().map { String(cString: $0) } ?? "\(label) install failed."
+                    metaNote += " \(label) failed: \(metaErr)"
                 }
+            }
+            if ok, !installed.isEmpty {
+                installMeta("vehicles.meta", metaURL, muguet_install_vehicles_meta, muguet_vehicles_meta_models)
+                installMeta("handling.meta", handlingURL, muguet_install_handling_meta, muguet_handling_meta_models)
+                installMeta("carvariations.meta", carvariationsURL, muguet_install_carvariations_meta, muguet_carvariations_meta_models)
             }
             DispatchQueue.main.async {
                 modsWorking = false
@@ -2597,6 +2730,37 @@ struct CLSettingsPanel: View {
                     }
                     if !s.sandboxVehicles.contains(vehicleCode) {
                         s.sandboxVehicles.append(vehicleCode)
+                        try? s.save()
+                    }
+                    refreshMods()
+                } else {
+                    modsStatus = "Install failed: \(err)"
+                }
+            }
+        }
+    }
+
+    // Whole-folder install (Add Folder…): the folder name is the
+    // mod name, so there is no name prompt. The folder opens in
+    // place, so the pick holds security-scoped access until the
+    // background install finishes reading it.
+    private func runFolderInstall(url: URL) {
+        modsWorking = true
+        modsStatus = "Installing folder…"
+        let scoped = url.startAccessingSecurityScopedResource()
+        DispatchQueue.global(qos: .userInitiated).async {
+            let ok = url.path.withCString { path in
+                "".withCString { n in muguet_install_mod_folder(path, n) }
+            }
+            let installed = muguet_mod_name().map { String(cString: $0) } ?? ""
+            let err = muguet_mod_error().map { String(cString: $0) } ?? "Install failed."
+            if scoped { url.stopAccessingSecurityScopedResource() }
+            DispatchQueue.main.async {
+                modsWorking = false
+                if ok, !installed.isEmpty {
+                    modsStatus = "Installed \(installed) from folder. Restart the game to use it."
+                    if !s.sandboxVehicles.contains(installed) {
+                        s.sandboxVehicles.append(installed)
                         try? s.save()
                     }
                     refreshMods()

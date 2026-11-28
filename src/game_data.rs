@@ -77,16 +77,20 @@ pub fn load_manifest_with_progress(data: &Path, mut progress: impl FnMut(usize, 
         };
         anyhow::ensure!(metadata.is_file(), "Game data is not a file: {name}");
         let trimmed_dlc = name.eq_ignore_ascii_case("common/data/dlcList.xml");
-        // The vehicles.meta the Mods manager merges mod models into:
-        // installing a mod's vehicles.meta grows this file past the
+        // The .meta files the Mods manager merges mod entries into:
+        // installing a mod's vehicles.meta grows that file past the
         // size in manifest.json (loweyezv adds ~5.5 KB), and the game
         // would refuse to start with "Game data incomplete". Same
-        // treatment as dlcList.xml above — a file we deliberately
+        // treatment as dlcList.xml above — files we deliberately
         // modify — so the manifest record is corrected in memory to
         // the real size and the engine reads the merged file.
+        // handling.meta and carvariations.meta merge the same way.
         let merged_vehicles_meta = name.eq_ignore_ascii_case("common/data/levels/gta5/vehicles.meta");
+        let merged_handling_meta = name.eq_ignore_ascii_case("common/data/handling.meta");
+        let merged_carvariations_meta =
+            name.eq_ignore_ascii_case("common/data/carvariations.meta");
         if metadata.len() != size {
-            anyhow::ensure!(optional_web_document(&name) || trimmed_dlc || merged_vehicles_meta,
+            anyhow::ensure!(optional_web_document(&name) || trimmed_dlc || merged_vehicles_meta || merged_handling_meta || merged_carvariations_meta,
                 "Game data incomplete: {name} (expected {size} bytes, found {} bytes). Import the complete game.zip again", metadata.len());
             record[1] = Value::from(metadata.len());
             adjusted += 1;
