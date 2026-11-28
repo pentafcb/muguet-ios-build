@@ -1442,7 +1442,6 @@ struct CLSettingsPanel: View {
     @State private var installedMods: [ModEntry] = []
     @State private var pickingMod = false
     @State private var modNameSheetURL: URL?
-    @State private var showingModNameSheet = false
     @State private var modNameText = ""
     @State private var modModelText = ""
     @State private var modToDelete: String?
@@ -1775,6 +1774,27 @@ struct CLSettingsPanel: View {
                             }
                             .buttonStyle(.plain)
                             .disabled(modsWorking)
+                            // Bare .rpf name prompt, inline in the Mods
+                            // section — NOT a sheet. Presenting it as a
+                            // sheet blacked the screen on three tries
+                            // (same-turn present, onDismiss, next
+                            // runloop turn): the picker dismissal was
+                            // still settling every time. An inline card
+                            // needs no UIKit presentation at all, so it
+                            // cannot black-screen; it appears as soon as
+                            // installModFile stashes the picked URL.
+                            if let url = modNameSheetURL {
+                                ModNameSheet(name: $modNameText, modelName: $modModelText, onCancel: {
+                                    modNameSheetURL = nil
+                                }, onInstall: {
+                                    let folder = modNameText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                                    let model = modModelText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                                    modNameSheetURL = nil
+                                    runModInstall(url: url, name: folder, modelName: model)
+                                })
+                                .clipShape(RoundedRectangle(cornerRadius: 12))
+                                .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.15), lineWidth: 1))
+                            }
                             if modsWorking {
                                 ProgressView().tint(.white)
                             }
@@ -1810,41 +1830,19 @@ struct CLSettingsPanel: View {
             .transition(.move(edge: .trailing))
         }
         .environment(\.colorScheme, .dark)
-        // The name sheet must wait for the picker to finish dismissing:
-        // presenting it in the same turn blacked the screen, because
-        // UIKit will not present on a controller that is dismissing.
-        // installModFile only stashes the picked URL; onDismiss fires
-        // once the picker is gone and the hierarchy is clean again.
-        .sheet(isPresented: $pickingMod, onDismiss: {
-            // Present on the next runloop turn: even after onDismiss,
-            // UIKit can still be settling the picker dismissal, and
-            // presenting in the same turn blacked the sheet.
-            DispatchQueue.main.async {
-                if modNameSheetURL != nil {
-                    showingModNameSheet = true
-                }
-            }
-        }) {
+        // No follow-up sheet after the picker: presenting the name
+        // prompt as a sheet blacked the screen on three tries
+        // (same-turn present, onDismiss, next-runloop present — the
+        // picker dismissal was still settling every time). The prompt
+        // is an inline card in the Mods section instead, so there is
+        // no second presentation to go wrong.
+        .sheet(isPresented: $pickingMod) {
             DocumentPicker(isPresented: $pickingMod, contentTypes: [UTType.zip, UTType(tag: "rpf", tagClass: .filenameExtension, conformingTo: .data) ?? UTType.data], onPick: { url in
                 installModFile(url)
             }, onError: { message in
                 modsStatus = "Could not pick a file: \(message)"
                 message.withCString { muguet_debug_log($0) }
             })
-        }
-        .sheet(isPresented: $showingModNameSheet) {
-            if let url = modNameSheetURL {
-                ModNameSheet(name: $modNameText, modelName: $modModelText, onCancel: {
-                    showingModNameSheet = false
-                    modNameSheetURL = nil
-                }, onInstall: {
-                    let folder = modNameText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                    let model = modModelText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                    showingModNameSheet = false
-                    modNameSheetURL = nil
-                    runModInstall(url: url, name: folder, modelName: model)
-                })
-            }
         }
         .alert("Remove mod?", isPresented: Binding(get: { modToDelete != nil }, set: { if !$0 { modToDelete = nil } })) {
             Button("Remove", role: .destructive) {
@@ -1893,9 +1891,9 @@ struct CLSettingsPanel: View {
         if url.pathExtension.lowercased() == "rpf" {
             // A bare dlc.rpf carries no folder name, so ask for it.
             // A zip skips this: Rust takes the name from the zip.
-            // Only stash the URL here — the name sheet is presented
-            // from the picker sheet's onDismiss, once the picker
-            // has fully gone away (see the sheet above).
+            // Only stash the URL here — the inline name card in the
+            // Mods section appears from the stashed URL; there is no
+            // follow-up sheet (the sheet blacked the screen).
             let stem = url.deletingPathExtension().lastPathComponent
             let prefill = stem.lowercased() == "dlc" ? "" : stem.lowercased()
             modNameText = prefill
