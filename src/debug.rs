@@ -52,6 +52,14 @@ struct State {
     // The slope is measured from here, so it shows within-session growth
     // rate instead of the level alone.
     first_sample: Option<(f64, u64)>,
+    // First available-memory sample of this session: (elapsed seconds,
+    // available MB). The available-memory slope (negative = falling)
+    // drives the slope-based inflow cut; same 30 s warm-up as the
+    // footprint slope.
+    first_avail_sample: Option<(f64, u64)>,
+    // Latest available-memory slope in MB/min, when at least 30 s of
+    // data exists. Read by the GPU thread's memory tick.
+    last_avail_slope: Option<f64>,
 }
 
 static STATE: LazyLock<Mutex<State>> = LazyLock::new(|| {
@@ -67,6 +75,8 @@ static STATE: LazyLock<Mutex<State>> = LazyLock::new(|| {
         leak_warned: false,
         last_persist: None,
         first_sample: None,
+        first_avail_sample: None,
+        last_avail_slope: None,
     })
 });
 
@@ -152,6 +162,51 @@ pub extern "C" fn muguet_ram_tracker_text() -> *const std::ffi::c_char {
     } else {
         std::ptr::null()
     }
+}
+
+// Slope in MB/min between a first sample (elapsed seconds, MB) and
+// the current reading. None before 30 s of data — a slope from a few
+// seconds is noise, not a trend. Positive = growing, negative =
+// falling. Used for the footprint slope and the available-memory
+// slope alike.
+pub(crate) fn slope_mb_min(first_elapsed: f64, first_value: u64, elapsed: f64, current: u64) -> Option<f64> {
+    let dt = elapsed - first_elapsed;
+    if dt < 30.0 {
+        return None;
+    }
+    Some((current as f64 - first_value as f64) / dt * 60.0)
+}
+
+// Inflow cut: available memory below 3 GB and falling faster than
+// ~300 MB/min. The level is deliberately above the tier-1 line
+// (2048 MB): a slope trigger only earns its keep if it fires BEFORE
+// the level tier does. At the measured touring slope (~1150 MB/min)
+// a 3 GB trigger buys ~50 s of lead; at the 300 MB/min threshold
+// slope it buys ~3 min.
+pub(crate) fn inflow_cut_needed(avail_mb: u64, slope_mb_min: f64) -> bool {
+    avail_mb < 3072 && slope_mb_min < -300.0
+}
+
+// Latest available-memory slope in MB/min, if at least 30 s of
+// samples exist. Read by the GPU thread's memory tick.
+pub fn avail_slope_mb_min() -> Option<f64> {
+    lock_state().last_avail_slope
+}
+
+// Marker the launcher reads on next launch: the last session ran
+// low on memory, so the next launch starts on Ultra Low. Written
+// the moment the session is classified low-memory, not at session
+// end — jetsam and quit have no reliable session-end hook on this
+// side, so waiting for one would lose the signal exactly when it
+// matters. Same Documents location as muguet-debug.json; the
+// launcher deletes the file after applying it.
+pub(crate) fn write_low_memory_hint(reason: &str) {
+    let Some(dir) = documents_dir() else {
+        return;
+    };
+    let _ = std::fs::create_dir_all(&dir);
+    let text = serde_json::json!({"preset": "ultra_low", "reason": reason}).to_string();
+    let _ = std::fs::write(dir.join("muguet-low-memory-hint.json"), text);
 }
 
 fn documents_dir() -> Option<std::path::PathBuf> {
@@ -295,15 +350,30 @@ fn sample_inner(footprint_mb: u64, available_mb: u64, heap_mb: u64, gpu: Option<
         // single burst (streaming / shader compile) instead. A negative
         // slope after a purge means the purge actually freed memory.
         let slope = match st.first_sample {
-            Some((t0, fp0)) if elapsed - t0 >= 30.0 => {
-                format!("{:.0} MB/min", (footprint_mb as f64 - fp0 as f64) / (elapsed - t0) * 60.0)
-            }
-            Some(_) => "n/a (<30s)".to_string(),
+            Some((t0, fp0)) => match slope_mb_min(t0, fp0, elapsed, footprint_mb) {
+                Some(s) => format!("{s:.0} MB/min"),
+                None => "n/a (<30s)".to_string(),
+            },
             None => {
                 st.first_sample = Some((elapsed, footprint_mb));
                 "n/a (first)".to_string()
             }
         };
+        // Available-memory slope, same measurement. Negative = falling
+        // toward the 1250 MB heap growth floor; the GPU thread reads
+        // the numeric value through avail_slope_mb_min() for the
+        // slope-based inflow cut.
+        let avail_slope = match st.first_avail_sample {
+            Some((t0, av0)) => slope_mb_min(t0, av0, elapsed, available_mb),
+            None => {
+                st.first_avail_sample = Some((elapsed, available_mb));
+                None
+            }
+        };
+        st.last_avail_slope = avail_slope;
+        let avail_slope_text = avail_slope
+            .map(|s| format!("{s:.0} MB/min"))
+            .unwrap_or_else(|| "n/a".to_string());
         let gpu_text = match st.last_gpu {
             Some(g) => format!(
                 "tex live {} (created {} destroyed {}) | buf live {} (created {} destroyed {}) | shaders {} pipes {} bg {} draws {} presents {}",
@@ -312,7 +382,7 @@ fn sample_inner(footprint_mb: u64, available_mb: u64, heap_mb: u64, gpu: Option<
             ),
             None => "gpu n/a".to_string(),
         };
-        line = Some(format!("sample run {} t {elapsed:.0}s footprint {footprint_mb} MB avail {available_mb} MB heap {heap_mb} MB slope {slope} | {gpu_text}", st.run));
+        line = Some(format!("sample run {} t {elapsed:.0}s footprint {footprint_mb} MB avail {available_mb} MB heap {heap_mb} MB slope {slope} avail-slope {avail_slope_text} | {gpu_text}", st.run));
     }
     if let Some(w) = warn {
         log_line(&w);

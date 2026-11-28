@@ -3097,7 +3097,7 @@ struct LauncherView: View {
         // checkStartupError used to run only from importView, so a
         // startup-error file was never shown (or cleared) once the
         // game data was already ready. Check on every appearance.
-        .onAppear(perform: checkStartupError)
+        .onAppear(perform: { checkStartupError(); checkLowMemoryHint() })
         .sheet(isPresented: $picking) {
             DocumentPicker(isPresented: $picking, onPick: { url in
                 importer.run(url)
@@ -3707,6 +3707,22 @@ struct LauncherView: View {
     // config fails before the game window exists (main.rs); the app
     // then exits, so surface it here on the next launch instead of
     // leaving the user with a silent quit. Deleted after one show.
+    // A session that ran low on memory leaves a hint file; the next
+    // launch starts on Ultra Low instead of walking into the same
+    // wall. The file is deleted after applying, so this runs once.
+    // Called on appearance and at Play, so the preset is in effect
+    // for the launch that follows.
+    private func checkLowMemoryHint() {
+        let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("muguet-low-memory-hint.json")
+        guard let data = try? Data(contentsOf: url),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              json["preset"] as? String == "ultra_low" else { return }
+        try? FileManager.default.removeItem(at: url)
+        s.applyUltraLowMode()
+        infoMessage = "Last session ran low on memory — started on Ultra Low. Raise the settings again whenever you like."
+    }
+
     private func checkStartupError() {
         let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("muguet-startup-error.txt")
@@ -3723,6 +3739,9 @@ struct LauncherView: View {
     }
 
     func start() {
+        // Belt-and-braces with onAppear: the preset must be in
+        // effect for this launch even if the view never re-appeared.
+        checkLowMemoryHint()
         if s.multiplayer && s.roomMode == "join" {
             let digits = s.joinCode.filter { $0.isNumber }
             if digits.isEmpty {

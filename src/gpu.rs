@@ -41,6 +41,11 @@ pub static SUSPENDED: AtomicBool = AtomicBool::new(false);
 // Set while the game is parked for low memory. The event-loop thread
 // mirrors it to the pause overlay; the GPU thread clears it on recovery.
 pub static MEMORY_PAUSED: AtomicBool = AtomicBool::new(false);
+// Set while the engine is stalled on heap allocations (no new GPU
+// commands, draws/presents frozen, heap at its live cap). The
+// event-loop thread mirrors it to the stall overlay; the GPU thread
+// clears it when draws resume or the clean stop fires.
+pub static STREAM_STALLED: AtomicBool = AtomicBool::new(false);
 
 pub static PRESENTS: AtomicU64 = AtomicU64::new(0);
 
@@ -890,6 +895,26 @@ pub struct Gpu {
     critical_since: Option<Instant>,
     paused_since: Option<Instant>,
     resume_since: Option<Instant>,
+    // Smart memory logic (RAM audit D1-D4): last tier seen by the
+    // 1 s tick, so the early-tier warning fires on entry only;
+    // whether the slope cut is currently active; whether the
+    // low-memory hint file was already written this session; the
+    // last purge's yield and the available memory at that purge, so
+    // a zero-yield purge can be skipped until memory falls further;
+    // and the freeze-detection state (last draws/presents, when
+    // they last advanced, when the stall started, whether its
+    // overlay is up).
+    last_tier: u8,
+    slope_cut_active: bool,
+    low_memory_hint_written: bool,
+    last_purge_yield_mb: Option<i64>,
+    last_purge_avail_mb: Option<u64>,
+    skipping_purge: bool,
+    last_draws: u64,
+    last_presents: u64,
+    last_progress: Instant,
+    stall_since: Option<Instant>,
+    stall_overlay_shown: bool,
     requested_refresh: u32,
     errors: Arc<AtomicU64>,
 
@@ -1009,6 +1034,8 @@ impl Gpu {
             dbg_idx: if dbg != 0 { dbg + 424 } else { 0 },
             draws: 0, skipped: 0, presents: 0, held_frames: 0, draws_at_present: 0, skipped_at_present: 0, pipe_creates: 0, fps_t0: Instant::now(), fps_n0: 0, fps_d0: 0,
             frame_pacer: Default::default(), last_memory_check: Instant::now(), last_cleanup: Instant::now() - Duration::from_secs(60), pressure_until: None, critical_since: None, paused_since: None, resume_since: None,
+            last_tier: 0, slope_cut_active: false, low_memory_hint_written: false, last_purge_yield_mb: None, last_purge_avail_mb: None, skipping_purge: false,
+            last_draws: 0, last_presents: 0, last_progress: Instant::now(), stall_since: None, stall_overlay_shown: false,
             requested_refresh: 0,
             errors, inflight: Arc::new(AtomicU64::new(0)), submits: 0, submits0: 0, passes: 0, passes0: 0,
         })
@@ -1161,6 +1188,58 @@ impl Gpu {
         self.enc_epoch += 1;
     }
 
+    // Freeze detection (RAM audit D4): the engine has stopped
+    // producing GPU commands, draws/presents have not advanced, and
+    // the heap has no growth headroom — the streaming stall. Silent
+    // infinite freezes become a loud overlay and, after 30 s
+    // stalled, the clean stop instead of a hung screen. Runs every
+    // loop iteration; the work is a few counter reads and one
+    // budget computation.
+    fn check_stall(&mut self, head: i32, tail: i32) {
+        let now = Instant::now();
+        let draws = self.draws;
+        let presents = self.presents;
+        if draws != self.last_draws || presents != self.last_presents {
+            self.last_draws = draws;
+            self.last_presents = presents;
+            self.last_progress = now;
+            self.stall_since = None;
+            if self.stall_overlay_shown {
+                self.stall_overlay_shown = false;
+                STREAM_STALLED.store(false, Ordering::Relaxed);
+            }
+            return;
+        }
+        let heap_mb = self.mem.data_size() as u64 >> 20;
+        let avail = crate::performance::available_memory();
+        let live_cap_mb = crate::performance::ios_heap_budget(crate::performance::physical_memory(), avail, self.mem.data_size() as u64) >> 20;
+        let paused = MEMORY_PAUSED.load(Ordering::Relaxed) || SUSPENDED.load(Ordering::Relaxed);
+        let quiet_secs = now.duration_since(self.last_progress).as_secs();
+        if !Self::stall_detected(head == tail, quiet_secs, Self::heap_at_cap(heap_mb, live_cap_mb), paused) {
+            self.stall_since = None;
+            return;
+        }
+        match self.stall_since {
+            None => {
+                self.stall_since = Some(now);
+                self.stall_overlay_shown = true;
+                STREAM_STALLED.store(true, Ordering::Relaxed);
+                log(&format!("memory: STREAMING STALLED — no GPU commands, draws/presents frozen {quiet_secs}s, heap {heap_mb} MB at live cap {live_cap_mb} MB, available {} MB", avail.map(|a| a >> 20).unwrap_or(0)));
+                crate::debug::console_line("[memory] STREAMING STALLED — low memory. Drive back toward the city, or restart with lower settings.");
+                self.mark_low_memory_session("streaming stall");
+            }
+            Some(since) if now.duration_since(since) >= Duration::from_secs(30) => {
+                self.stall_since = None;
+                self.stall_overlay_shown = false;
+                STREAM_STALLED.store(false, Ordering::Relaxed);
+                log("memory: streaming stalled 30 s; stopping the game cleanly instead of an infinite freeze");
+                crate::debug::console_line("[memory] streaming stalled 30 s; stopping the game cleanly instead of an infinite freeze");
+                crate::app::engine_error("Streaming stalled — low memory. The game was stopped instead of freezing. Reopen Muguet with lower graphics settings.".into());
+            }
+            Some(_) => {}
+        }
+    }
+
     fn run(&mut self) -> ! {
         let mut tail = RING_DATA as i32;
         self.hdr(1).store(tail, Ordering::SeqCst);
@@ -1180,6 +1259,7 @@ impl Gpu {
                 let _ = self.device.poll(PollType::Poll);
             }
             let head = self.hdr(0).load(Ordering::SeqCst);
+            self.check_stall(head, tail);
             if head == tail {
                 if !self.pending_events.is_empty() || !self.pending_resolve.is_empty() {
                     self.flush();
@@ -3563,22 +3643,78 @@ impl Gpu {
     // that window — and unlike the footprint, available is the real
     // distance to jetsam. The footprint ladder survives only as a
     // fallback when there is no available-memory signal (non-iOS
-    // builds, where it is None). Tier 1 watch (768 MB free): purge
-    // every 5 s, tracker amber. Tier 2 pressure (384 MB free): purge
-    // now, 30 FPS for 30 s. Tier 3 critical (192 MB free): deepest
-    // purge; if still critical 3 s after a purge, pause the game
-    // until memory recovers.
+    // builds, where it is None). Tier 1 early watch (2048 MB free):
+    // purge every 5 s, 30 FPS cap, tracker amber, console warning.
+    // Tier 2 pressure (384 MB free): purge now, 30 FPS for 30 s.
+    // Tier 3 critical (192 MB free): deepest purge; if still
+    // critical 3 s after a purge, pause the game until memory
+    // recovers. Tier 1 sits ABOVE the 1250 MB heap growth floor on
+    // purpose: the heap stops growing when available falls below
+    // 1250 MB, so a tier that only fires at 768 MB acts ~500 MB
+    // after the heap already froze. The 2048 MB line leaves ~798 MB
+    // of headroom above the floor — about 3x the measured ~258 MB
+    // streaming request step (run 4: the engine asks for heap +
+    // 258 MB while the cap allows heap + 29 MB) — where a 1536 MB
+    // line would leave only ~286 MB, barely one step of margin.
     fn memory_tier(footprint_mb: u64, avail_mb: Option<u64>) -> u8 {
         match avail_mb {
             Some(a) if a < 192 => 3,
             Some(a) if a < 384 => 2,
-            Some(a) if a < 768 => 1,
+            Some(a) if a < 2048 => 1,
             Some(_) => 0,
             None if footprint_mb >= 2550 => 3,
             None if footprint_mb >= 2300 => 2,
             None if footprint_mb >= 2000 => 1,
             None => 0,
         }
+    }
+
+    // Heap at or near its live cap: the live cap (stream reserve +
+    // ceilings, performance.rs) sits at or below the heap, with a
+    // 128 MB near margin. Below the 1250 MB growth floor the cap
+    // falls under the heap, so this is true exactly when no further
+    // heap growth is possible.
+    fn heap_at_cap(heap_mb: u64, live_cap_mb: u64) -> bool {
+        heap_mb + 128 >= live_cap_mb
+    }
+
+    // Zero-yield purge skip: the last purge freed under 16 MB, so
+    // the next one is skipped until available has fallen another
+    // 256 MB below the last purge — unless the tier is critical (3),
+    // where the purge is the pause path's last attempt and must
+    // always run. No prior purge means no skip.
+    fn purge_skip(last_yield_mb: Option<i64>, last_avail_mb: Option<u64>, avail_mb: u64, tier: u8) -> bool {
+        if tier >= 3 {
+            return false;
+        }
+        let (Some(yield_mb), Some(last_avail)) = (last_yield_mb, last_avail_mb) else {
+            return false;
+        };
+        yield_mb < 16 && avail_mb.saturating_add(256) > last_avail
+    }
+
+    // Freeze detection predicate: the engine produces no new GPU
+    // commands (ring head == tail), draws/presents have not advanced
+    // for over 10 s, and the heap is at its live cap — the streaming
+    // stall from the RAM audit. A memory pause is not a stall (the
+    // pause has its own overlay and supervisor), so it is excluded.
+    fn stall_detected(idle: bool, quiet_secs: u64, heap_capped: bool, paused: bool) -> bool {
+        idle && quiet_secs > 10 && heap_capped && !paused
+    }
+
+    // Record that this session ran low on memory, once: write the
+    // hint file the launcher reads on next launch (Ultra Low for the
+    // next session) and say so on the console. Written the moment the
+    // session is classified low — tier 2, a streaming stall, or the
+    // pause clean-stop — not at session end, because jetsam and quit
+    // have no reliable session-end hook on this side.
+    fn mark_low_memory_session(&mut self, reason: &str) {
+        if self.low_memory_hint_written {
+            return;
+        }
+        self.low_memory_hint_written = true;
+        crate::debug::write_low_memory_hint(reason);
+        crate::debug::console_line("[memory] this session ran low on memory — next launch will start on Ultra Low");
     }
 
     fn check_memory(&mut self) {
@@ -3592,10 +3728,42 @@ impl Gpu {
             let heap_mb = crate::RT.get().map(|r| (r.mem.data_size() >> 20) as u64).unwrap_or(0);
             let status = match tier { 3 => " · LOW", 2 => " · CLEANING", _ => "" };
             crate::debug::set_ram_tracker(format!("RAM {:.1} GB · {} MB free{}", fp as f64 / 1024.0, avail_mb, status), tier);
+            // Early-tier warning, on entry only: the tick runs every
+            // second, so an unconditional log would spam the console.
+            if tier >= 1 && self.last_tier == 0 {
+                log(&format!("memory: available {avail_mb} MB — early tier {tier}, 30 FPS cap + purge requested; heap growth stops below 1250 MB free"));
+                crate::debug::console_line(&format!("[memory] low memory warning: {avail_mb} MB free — 30 FPS cap on, cleaning up; head back toward the city before the heap fills"));
+            }
+            self.last_tier = tier;
             if tier >= 1 { request_memory_cleanup(); }
-            if tier >= 2 { self.pressure_until = Some(now + Duration::from_secs(30)); }
+            // The 30 FPS cap now starts at tier 1, not tier 2: the
+            // heap growth floor is 1250 MB free, so waiting for tier 2
+            // (384 MB) caps the frame rate long after the heap froze.
+            if tier >= 1 { self.pressure_until = Some(now + Duration::from_secs(30)); }
+            // Tier 2 means this session genuinely ran into the wall:
+            // record it so the next launch starts on Ultra Low.
+            if tier >= 2 { self.mark_low_memory_session("tier 2"); }
             crate::diagnostics::trim();
             crate::debug::sample(fp, avail_mb, heap_mb, Some(self.counts()));
+            // Slope cut: available falling fast toward the growth
+            // floor. A level alone reacts too late — at ~1150 MB/min
+            // the headroom above the floor vanishes in under a
+            // minute. The 30 FPS cap + purge are the only runtime
+            // levers that provably work (quality knobs are
+            // startup-only), so use them while the slope is steep.
+            if let Some(slope) = crate::debug::avail_slope_mb_min() {
+                if crate::debug::inflow_cut_needed(avail_mb, slope) {
+                    if !self.slope_cut_active {
+                        self.slope_cut_active = true;
+                        log(&format!("memory: available falling {slope:.0} MB/min at {avail_mb} MB free — cutting inflow (30 FPS cap + purge)"));
+                        crate::debug::console_line(&format!("[memory] memory falling fast ({slope:.0} MB/min) — 30 FPS cap on, cleaning up"));
+                    }
+                    self.pressure_until = Some(now + Duration::from_secs(30));
+                    request_memory_cleanup();
+                } else if self.slope_cut_active {
+                    self.slope_cut_active = false;
+                }
+            }
             // Memory pause supervisor: while paused the game loop is
             // parked and the purge keeps running, so this 1 s tick is
             // what watches for recovery. Tier 1 or below for 2 s
@@ -3650,6 +3818,27 @@ impl Gpu {
         if !crate::performance::MEMORY_PRESSURE.load(Ordering::Relaxed) || now.duration_since(self.last_cleanup) < Duration::from_secs(throttle) { return; }
         if tier_now >= 3 {
             log(&format!("memory cleanup: critical purge (available {} MB, {}s since last)", available >> 20, now.duration_since(self.last_cleanup).as_secs()));
+        }
+        // Zero-yield purge gate: once warm the purge frees ~0 MB but
+        // still drops every compiled pipeline (recompile storm + held
+        // frames) and blocks the GPU thread up to 2 s in device.poll.
+        // Skip it until available has fallen another 256 MB below the
+        // last purge — except at tier 3, where the purge is the pause
+        // path's last attempt and must always run. Skipping leaves
+        // MEMORY_PRESSURE set, so the next tick re-evaluates instead
+        // of waiting out the throttle.
+        if let Some(avail_mb) = crate::performance::available_memory().map(|a| a >> 20) {
+            if Self::purge_skip(self.last_purge_yield_mb, self.last_purge_avail_mb, avail_mb, tier_now) {
+                if !self.skipping_purge {
+                    self.skipping_purge = true;
+                    log(&format!("memory cleanup: skipping zero-yield purge (last yield {} MB, available {} MB) until available falls 256 MB", self.last_purge_yield_mb.unwrap_or(0), avail_mb));
+                }
+                return;
+            }
+            if self.skipping_purge {
+                self.skipping_purge = false;
+                log(&format!("memory cleanup: resuming purges (available {} MB, 256 MB below last purge)", avail_mb));
+            }
         }
         crate::performance::MEMORY_PRESSURE.store(false, Ordering::Relaxed);
         self.last_cleanup = now;
@@ -3715,6 +3904,12 @@ impl Gpu {
         let remaining = crate::performance::available_memory().map(|a| a >> 20);
         let remaining_mb = remaining.unwrap_or(0);
         log(&format!("memory cleanup: {before} -> {after} MB, remaining {remaining_mb} MB; cleared {bg_before} bind groups, {} pipelines, {views_cleared} cached views; temporary 30 FPS limit", pipes_before - self.pipelines.len()));
+        // Record the yield for the next purge's skip decision: a warm
+        // purge frees ~0 MB, so the next one is skipped until memory
+        // falls further (D3 gate above). Yield is signed — a purge can
+        // measure negative while the game keeps allocating.
+        self.last_purge_yield_mb = Some(before as i64 - after as i64);
+        self.last_purge_avail_mb = remaining;
         crate::debug::sample_forced(after, remaining_mb, crate::RT.get().map(|r| (r.mem.data_size() >> 20) as u64).unwrap_or(0), Some(self.counts()));
         // Critical tier after a purge: if the footprint is still over
         // the line 3 s later, the purge is not keeping up and jetsam is

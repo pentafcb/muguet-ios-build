@@ -40,6 +40,7 @@ struct App {
     startup_stage: String,
     startup_warning_shown: bool,
     memory_pause_shown: bool,
+    stall_shown: bool,
 
     #[cfg_attr(not(target_os = "ios"), allow(dead_code))]
     launcher_shown: bool,
@@ -228,6 +229,10 @@ impl ApplicationHandler for App {
             // stop message with the pause overlay on the next tick.
             gpu::MEMORY_PAUSED.store(false, std::sync::atomic::Ordering::Relaxed);
             self.memory_pause_shown = false;
+            // Same for the streaming-stall overlay: the stop message
+            // is the terminal one, not the stall warning.
+            gpu::STREAM_STALLED.store(false, std::sync::atomic::Ordering::Relaxed);
+            self.stall_shown = false;
             gpu::SUSPENDED.store(true, std::sync::atomic::Ordering::Relaxed);
             input::set_focus(false);
             #[cfg(target_os = "ios")]
@@ -246,6 +251,22 @@ impl ApplicationHandler for App {
             crate::touch::loading(Some("Paused — low memory.\nCleaning up, the game resumes when memory recovers."));
         } else if !paused && self.memory_pause_shown {
             self.memory_pause_shown = false;
+            #[cfg(target_os = "ios")]
+            crate::touch::loading(None);
+        }
+        // Streaming stall mirror: the GPU thread detects the engine
+        // stalled on heap allocations (no new commands, draws frozen,
+        // heap at its live cap) and raises STREAM_STALLED. Show the
+        // stall overlay until draws resume or the clean stop fires.
+        // A memory pause is not a stall — the detector excludes it —
+        // so the two mirrors cannot fight over the overlay.
+        let stalled = gpu::STREAM_STALLED.load(std::sync::atomic::Ordering::Relaxed);
+        if stalled && !self.stall_shown {
+            self.stall_shown = true;
+            #[cfg(target_os = "ios")]
+            crate::touch::loading(Some("Streaming stalled — low memory.\nDrive back toward the city, or restart with lower settings."));
+        } else if !stalled && self.stall_shown {
+            self.stall_shown = false;
             #[cfg(target_os = "ios")]
             crate::touch::loading(None);
         }
@@ -481,7 +502,7 @@ pub fn run(rt: Option<Arc<Runtime>>, startup: crate::config::Startup, args: Vec<
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Wait);
     let mut app = App { mode_chosen: false, rt, startup, args, window: None, started: false, runtime_rx: None,
-        startup_since: None, startup_stage: String::new(), startup_warning_shown: false, memory_pause_shown: false,
+        startup_since: None, startup_stage: String::new(), startup_warning_shown: false, memory_pause_shown: false, stall_shown: false,
         launcher_shown: false, locked: cfg!(target_os = "ios"), mods: ModifiersState::empty(), wheel_accum: 0.0 };
     event_loop.run_app(&mut app)?;
     Ok(())
