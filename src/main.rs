@@ -13,6 +13,7 @@ mod config;
 mod debug;
 mod diagnostics;
 mod fs;
+mod fx;
 mod game_data;
 mod gpu;
 mod host;

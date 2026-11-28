@@ -1205,6 +1205,10 @@ pub fn script_tick(caller: &mut Caller<'_, HostState>, thread: u64, tls: u64) ->
             // sky colour itself was written into the timecycle file
             // at startup by config.rs.
             sync_sky_from_env();
+            // Same for Post FX: restore the last live effect set
+            // (state file first, MUGUET_FX env second), so the
+            // chain is already live when the first frame presents.
+            crate::debug::console_line(&crate::fx::fx_sync_from_env());
             // Taken keys are (owner, key): the old owner is gone, and
             // a stale key permanently blocks mirroring a later car
             // that reuses the same entity handle.
@@ -2844,6 +2848,19 @@ pub extern "C" fn muguet_console_command(code: *const std::ffi::c_char) {
                 crate::debug::console_line("no traffic OFF — spawning resumes next frame (settings densities still 0 from this launch — raise them in the launcher and restart for full traffic)");
             }
         }
+        // Post FX built-in option: ReShade-style post-processing in
+        // the host (WGSL passes in gpu.rs present()). Purely visual
+        // and host-side, so it applies live with no restart and is
+        // allowed in multiplayer. The console handler runs on the
+        // Swift main thread and present() reads the atomics on the
+        // GPU thread, so no ConsoleAction queue is needed here (same
+        // as the notraffic flag, which the script thread only reads).
+        "fx" => {
+            let rest: Vec<&str> = parts.collect();
+            for line in crate::fx::fx_console(&rest) {
+                crate::debug::console_line(&line);
+            }
+        }
         "ram" => {
             let (text, _) = crate::debug::ram_tracker();
             if text.is_empty() {
@@ -2893,6 +2910,9 @@ pub extern "C" fn muguet_console_command(code: *const std::ffi::c_char) {
             // Settings re-read: re-sync the No Traffic flag so a
             // launcher toggle change applies without a restart.
             sync_no_traffic_from_env();
+            // Same for Post FX: a launcher "fx" change applies when
+            // there is no saved live state yet (the state file wins).
+            crate::debug::console_line(&crate::fx::fx_sync_from_env());
             crate::debug::console_line("settings reloaded from the launcher config");
         }
         "lowram" => {
@@ -2920,6 +2940,7 @@ pub extern "C" fn muguet_console_command(code: *const std::ffi::c_char) {
             crate::debug::console_line("  cheat <CODE> — type a GTA cheat (e.g. cheat TURTLE, cheat LAWYERUP clears wanted)");
             crate::debug::console_line("  fp — toggle first-person camera");
             crate::debug::console_line("  notraffic [on|off] — no traffic cars, no peds, no parked cars (single-player; toggles live)");
+            crate::debug::console_line("  fx [effect on|off | value <number> | save|load|delete <name> | presets | reset | off] — post FX: grade, sharpen, FXAA, vignette, bloom-lite (live, no restart; fx help for the full list)");
             crate::debug::console_line("  sky <pink|black|cyan|purple|off> — FiveM PvP sky pack: sky colour + no clouds + no rain + no shadows (colour needs a restart; set it in the launcher picker to keep it)");
             crate::debug::console_line("  stretch <off|4:3|5:4> — stretched resolution: render narrow, stretched wide (needs a restart; set it in the launcher picker)");
             crate::debug::console_line("  ram — show RAM footprint / free memory");

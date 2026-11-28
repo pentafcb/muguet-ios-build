@@ -613,6 +613,252 @@ struct CheatMenuView: View {
     }
 }
 
+// Post FX menu (from the MENU button): ReShade-style visual
+// effects, live — no restart. Talks to Rust only through the
+// existing muguet_console_command extern (fx ... commands, same as
+// the console); reads Documents/muguet-fx-state.json on appear to
+// show the current values, and Documents/muguet-fx-presets.json
+// for the preset list. Toggles send at once; sliders send once
+// when the drag ends, so a drag does not spam the state file.
+// After loading a preset the view polls the state file briefly
+// (the Rust handler rewrites it when the preset applies) and then
+// refreshes the controls from disk.
+private struct FxStateFile: Decodable {
+    var version: Int = 1
+    var state: FxState = FxState()
+}
+
+private struct FxState: Codable, Equatable {
+    var grade: Bool = false
+    var sat: Double = 1.0
+    var con: Double = 1.0
+    var bri: Double = 0.0
+    var sharpen: Bool = false
+    var sharp: Double = 0.5
+    var fxaa: Bool = false
+    var vignette: Bool = false
+    var vig: Double = 0.45
+    var bloom: Bool = false
+    var bloom_strength: Double = 0.6
+    var bloom_threshold: Double = 0.8
+}
+
+private struct FxPresetsFile: Decodable {
+    var version: Int = 1
+    var presets: [String: FxState] = [:]
+}
+
+struct FxMenuView: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var state = FxState()
+    @State private var presets: [String] = []
+    @State private var presetName = ""
+    @State private var toastMessage: String?
+
+    var body: some View {
+        NavigationView {
+            List {
+                Section(header: Text("Color grade")) {
+                    Toggle("Color grade", isOn: fxToggle(\.grade, "grade"))
+                    if state.grade {
+                        fxSlider("Saturation", value: $state.sat, range: 0...2, command: "sat")
+                        fxSlider("Contrast", value: $state.con, range: 0...2, command: "con")
+                        fxSlider("Brightness", value: $state.bri, range: -0.5...0.5, command: "bri")
+                    }
+                }
+                Section(header: Text("Sharpen")) {
+                    Toggle("Sharpen", isOn: fxToggle(\.sharpen, "sharpen"))
+                    if state.sharpen {
+                        fxSlider("Amount", value: $state.sharp, range: 0...1, command: "sharp")
+                    }
+                }
+                Section(header: Text("Anti-aliasing")) {
+                    Toggle("FXAA", isOn: fxToggle(\.fxaa, "fxaa"))
+                    Text("Cheap edge smoothing. SMAA is not built — too heavy for the phone on top of the game.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+                Section(header: Text("Vignette")) {
+                    Toggle("Vignette", isOn: fxToggle(\.vignette, "vignette"))
+                    if state.vignette {
+                        fxSlider("Amount", value: $state.vig, range: 0...1, command: "vig")
+                    }
+                }
+                Section(header: Text("Bloom (lite)")) {
+                    Toggle("Bloom", isOn: fxToggle(\.bloom, "bloom"))
+                    if state.bloom {
+                        fxSlider("Strength", value: $state.bloom_strength, range: 0...2, command: "bloom")
+                        fxSlider("Threshold", value: $state.bloom_threshold, range: 0...1, command: "thr")
+                    }
+                    Text("Soft glow from bright areas. Two quarter-res passes — the cheapest effect here after FXAA.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+                Section(header: Text("Presets")) {
+                    HStack {
+                        TextField("Preset name", text: $presetName)
+                            .autocorrectionDisabled()
+                        Button("Save") {
+                            let name = presetName.trimmingCharacters(in: .whitespaces)
+                            guard fxValidPresetName(name) else {
+                                toast("Bad name — letters, numbers, spaces, - and _ only (1-48 chars)")
+                                return
+                            }
+                            send("fx save \(name)")
+                            presetName = ""
+                            loadPresets()
+                            toast("Preset saved: \(name)")
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                    if presets.isEmpty {
+                        Text("No presets saved yet.").font(.caption).foregroundStyle(.secondary)
+                    }
+                    ForEach(presets, id: \.self) { name in
+                        HStack {
+                            Text(name)
+                            Spacer()
+                            Button("Load") {
+                                send("fx load \(name)")
+                                refreshAfterLoad()
+                                toast("Preset loaded: \(name)")
+                            }
+                            .buttonStyle(.bordered)
+                            Button("Delete") {
+                                send("fx delete \(name)")
+                                loadPresets()
+                            }
+                            .buttonStyle(.bordered)
+                            .tint(.red)
+                        }
+                    }
+                }
+                Section {
+                    Button("Reset all effects") {
+                        send("fx reset")
+                        state = FxState()
+                        toast("All effects off")
+                    }
+                    .tint(.red)
+                    Text("Applies live, next frame — no restart. Visual only, works in multiplayer. No depth effects (AO, depth of field) in this build.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle("Post FX")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Close") { dismiss() }
+                }
+            }
+            .overlay(alignment: .bottom) {
+                if let msg = toastMessage {
+                    Text(msg)
+                        .font(.callout.bold())
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .background(.ultraThinMaterial)
+                        .clipShape(Capsule())
+                        .shadow(radius: 5)
+                        .padding(.bottom, 20)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+            }
+        }
+        .navigationViewStyle(StackNavigationViewStyle())
+        .onAppear {
+            loadState()
+            loadPresets()
+        }
+    }
+
+    // A Toggle binding that sends the command on tap. Programmatic
+    // state changes (loading the state file) do not go through the
+    // setter, so opening the menu never spams commands for values
+    // that are already on.
+    private func fxToggle(_ key: WritableKeyPath<FxState, Bool>, _ command: String) -> Binding<Bool> {
+        Binding(
+            get: { state[keyPath: key] },
+            set: { v in
+                state[keyPath: key] = v
+                send("fx \(command) \(v ? "on" : "off")")
+            }
+        )
+    }
+
+    // A slider row that sends its value once, when the drag ends.
+    private func fxSlider(_ label: String, value: Binding<Double>, range: ClosedRange<Double>, command: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text(label)
+                Spacer()
+                Text(String(format: "%.2f", value.wrappedValue)).font(.caption.monospaced()).foregroundStyle(.secondary)
+            }
+            Slider(value: value, in: range, step: 0.01) { editing in
+                if !editing {
+                    send("fx \(command) \(String(format: "%.2f", value.wrappedValue))")
+                }
+            }
+        }
+    }
+
+    private func send(_ cmd: String) {
+        cmd.withCString { muguet_console_command($0) }
+    }
+
+    // Same rule as Rust's valid_preset_name: no separators, no dots,
+    // 1-48 chars. Checked here so the toast cannot claim a save
+    // that Rust then rejects.
+    private func fxValidPresetName(_ name: String) -> Bool {
+        guard !name.isEmpty, name.count <= 48 else { return false }
+        return name.allSatisfy { ($0.isASCII && ($0.isLetter || $0.isNumber)) || $0 == " " || $0 == "-" || $0 == "_" }
+    }
+
+    private func toast(_ msg: String) {
+        withAnimation { toastMessage = msg }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            withAnimation { toastMessage = nil }
+        }
+    }
+
+    private static func documentsURL() -> URL? {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+    }
+
+    private func loadState() {
+        guard let url = Self.documentsURL()?.appendingPathComponent("muguet-fx-state.json"),
+              let data = try? Data(contentsOf: url),
+              let file = try? JSONDecoder().decode(FxStateFile.self, from: data) else { return }
+        state = file.state
+    }
+
+    private func loadPresets() {
+        guard let url = Self.documentsURL()?.appendingPathComponent("muguet-fx-presets.json"),
+              let data = try? Data(contentsOf: url),
+              let file = try? JSONDecoder().decode(FxPresetsFile.self, from: data) else {
+            presets = []
+            return
+        }
+        presets = file.presets.keys.sorted()
+    }
+
+    // The Rust handler rewrites the state file when a preset
+    // applies; poll it briefly, then refresh the controls from
+    // disk so they show the loaded values.
+    private func refreshAfterLoad() {
+        let before = state
+        var tries = 0
+        func tick() {
+            tries += 1
+            loadState()
+            if state != before || tries >= 10 {
+                loadPresets()
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: tick)
+        }
+        tick()
+    }
+}
+
 struct VehicleMenuView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var toastMessage: String?
@@ -3972,6 +4218,15 @@ public func muguetOpenMenu() {
             }))
         }
 
+        // Post FX is local visuals only (host-side shaders, no game
+        // state), so it is offered in multiplayer too — unlike the
+        // cheat and spawn entries above, which stay single-player.
+        alert.addAction(UIAlertAction(title: "Post FX (visual effects)", style: .default, handler: { _ in
+            let host = UIHostingController(rootView: FxMenuView())
+            host.modalPresentationStyle = .formSheet
+            presenter.present(host, animated: true)
+        }))
+
         alert.addAction(UIAlertAction(title: "Settings & Options", style: .default, handler: { _ in
             weak var sheet: UIViewController?
             let host = UIHostingController(rootView: LauncherView(isOverlay: true, play: {
@@ -4006,7 +4261,7 @@ public func muguetOpenMenu() {
 // live updates and jumps to the bottom. Typing a command also resumes
 // live view, so its output is visible at once. Commands: car/spawn,
 // heal, kill, fix, tp, coords, weather, cheat, fp, ram, dlc, reload,
-// lowram, ultralow, dv, tpm, quit, help, clear, close — see help in
+// lowram, ultralow, dv, tpm, fx, quit, help, clear, close — see help in
 // the console.
 // The auto-scroll flag lives in a reference type, not a plain @State
 // Bool: an .onChange(of: logText) closure captures the flag from the

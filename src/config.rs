@@ -262,6 +262,9 @@ const SETTING_VARS: &[&str] = &[
     // Stretched Resolution built-in option: same reload hazard — the
     // launcher picker must be re-read from config.json on Play.
     "MUGUET_STRETCH",
+    // Post FX built-in option: same reload hazard — the launcher "fx"
+    // flag must be re-read from config.json on Play.
+    "MUGUET_FX",
 ];
 
 #[no_mangle]
@@ -401,6 +404,14 @@ fn settings(cfg_path: &Path) -> Vec<String> {
             .unwrap_or("off");
     if crate::stretch::stretch_active(stretch) {
         set_default("MUGUET_STRETCH", stretch);
+    }
+
+    // Post FX built-in option: the launcher "fx" flag is a compact
+    // "grade=1,sat=1.1,..." list (see fx::parse_fx_env). The env
+    // flag only applies when there is no saved live state yet — the
+    // state file (the player's last in-game change) wins.
+    if let Some(fx) = cfg.get("fx").and_then(|v| v.as_str()).map(str::trim).filter(|v| !v.is_empty()) {
+        set_default("MUGUET_FX", fx);
     }
 
     // NaN/inf used to flow through unchecked: NaN as i64 is 0 (clamped

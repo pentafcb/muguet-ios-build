@@ -856,6 +856,12 @@ pub struct Gpu {
     nearest: HashMap<u32, Sampler>,
     f2d_pipeline: Option<RenderPipeline>,
     blit: Option<RenderPipeline>,
+    // Post FX chain (fx.rs state, WGSL passes in present_fx): created
+    // lazily on the first frame with an effect on, rebuilt when the
+    // back-buffer size or bloom toggle changes. Survives the memory
+    // purge on purpose (like blit): it is 3 pipelines + 2 quarter-res
+    // textures, ~1 MB, and the purge's job is game pipelines.
+    fx_chain: Option<FxChain>,
     mip_pipelines: HashMap<TextureFormat, RenderPipeline>,
     mip_sampler: Option<Sampler>,
     occlusion_set: Option<QuerySet>,
@@ -1027,7 +1033,7 @@ impl Gpu {
             bgl_cache: HashMap::new(), empty_bgl: None, pipelines: HashMap::new(), compute: HashMap::new(), bind_groups: HashMap::new(),
             ubo_slots: (0..FRAME_SLOTS).map(|_| Vec::new()).collect(), ubo_shared: Vec::new(), ubo_slot: 0, ubo_chunk: 0, ubo_off: 0,
             dummy_tex: HashMap::new(), dummy_smp: None, dummy_cmp: None, dummy_bufs: HashMap::new(), zero_vb: None, zero_src: None, scratch: None,
-            proxy_pipelines: HashMap::new(), unfilt: HashMap::new(), nearest: HashMap::new(), f2d_pipeline: None, blit: None, mip_pipelines: HashMap::new(), mip_sampler: None,
+            proxy_pipelines: HashMap::new(), unfilt: HashMap::new(), nearest: HashMap::new(), f2d_pipeline: None, blit: None, fx_chain: None, mip_pipelines: HashMap::new(), mip_sampler: None,
             occlusion_set: None, occlusion_next: 0, occlusion_active: None, occlusion_pass_slot: None,
             pending_resolve: Vec::new(), pending_events: Vec::new(), pending_maps: Vec::new(), counter_src: None, counter_slot: 0,
             frame_slot_done: (0..FRAME_SLOTS).map(|_| None).collect(), last_submit: None, vb_avail: [0; 16],
@@ -1482,6 +1488,13 @@ impl Gpu {
 
     fn destroy(&mut self, id: u32) {
         self.pending_clears.remove(&id);
+        // The FX chain caches a bind group over this texture: if it
+        // is the chain's source, reset the key so the next present
+        // rebuilds the bind groups from the recreated texture
+        // instead of sampling a destroyed one.
+        if self.fx_chain.as_ref().map(|c| c.key.0 == id).unwrap_or(false) {
+            self.fx_chain.as_mut().unwrap().key.0 = u32::MAX;
+        }
         if self.is_bound(id) { self.pdirty = true; }
         if self.obj(id).is_none() { return; }
         if self.used(id) { self.flush(); }
@@ -3457,6 +3470,374 @@ impl Gpu {
         self.use_buf(res);
     }
 
+    // Post FX chain state: 3 pipelines + sampler + 64-byte uniform
+// + 2 quarter-res bloom textures, created once and reused. key is
+// (back-buffer id, width, height, bloom on): any change rebuilds
+// the bloom textures and bind groups. last_uniform is the 0xFF
+// sentinel until the first uniform upload.
+struct FxChain {
+    composite: RenderPipeline,
+    downsample: RenderPipeline,
+    blur: RenderPipeline,
+    sampler: Sampler,
+    uniform: Buffer,
+    bloom_a: Option<(Texture, TextureView)>,
+    bloom_b: Option<(Texture, TextureView)>,
+    bloom_format: TextureFormat,
+    key: (u32, u32, u32, bool),
+    composite_bg: Option<BindGroup>,
+    downsample_bg: Option<BindGroup>,
+    blur_bg: Option<BindGroup>,
+    last_uniform: [u8; 64],
+}
+
+// Fullscreen triangle, same shape as the blit shader.
+const FX_VS: &str = "@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f { var p = array<vec2f, 3>(vec2f(-1, -1), vec2f(3, -1), vec2f(-1, 3)); return vec4f(p[i], 0, 1); }";
+
+// Uniform block, byte-identical to fx::fx_uniform_bytes (64 bytes):
+// resolution, bloom_size, saturation, contrast, brightness,
+// sharpen, fxaa_span, vignette, bloom_strength, bloom_threshold,
+// flags, 3x pad. Built by explicit offsets in fx.rs, never by
+// casting a struct, so a Rust layout change cannot desync this.
+// Flags: 1 grade, 2 sharpen, 4 fxaa, 8 vignette, 16 bloom.
+const FX_PARAMS: &str = "struct FxParams { resolution: vec2f, bloom_size: vec2f, saturation: f32, contrast: f32, brightness: f32, sharpen: f32, fxaa_span: f32, vignette: f32, bloom_strength: f32, bloom_threshold: f32, flags: u32, _pad0: u32, _pad1: u32, _pad2: u32, }";
+const FX_COMPOSITE_BINDINGS: &str = "@group(0) @binding(0) var src_tex: texture_2d<f32>; @group(0) @binding(1) var samp: sampler; @group(0) @binding(2) var bloom_tex: texture_2d<f32>; @group(0) @binding(3) var<uniform> params: FxParams;";
+const FX_PLAIN_BINDINGS: &str = "@group(0) @binding(0) var src_tex: texture_2d<f32>; @group(0) @binding(1) var samp: sampler; @group(0) @binding(2) var<uniform> params: FxParams;";
+
+// Composite: the one fullscreen pass that reaches the screen.
+// Order is deliberate — FXAA first (it needs the raw image: edge
+// detection on a graded image misreads edges), then bloom add,
+// sharpen against the source neighbours, grade (pointwise), and
+// vignette (pointwise) last.
+const FX_COMPOSITE_FS: &str = "
+fn fx_luma(c: vec3f) -> f32 { return dot(c, vec3f(0.299, 0.587, 0.114)); }
+fn fxaa_filter(uv: vec2f) -> vec3f {
+    let texel = 1.0 / params.resolution;
+    let c_m = textureSample(src_tex, samp, uv).rgb;
+    let l_m = fx_luma(c_m);
+    let l_n = fx_luma(textureSample(src_tex, samp, uv + vec2f(0.0, -texel.y)).rgb);
+    let l_s = fx_luma(textureSample(src_tex, samp, uv + vec2f(0.0, texel.y)).rgb);
+    let l_w = fx_luma(textureSample(src_tex, samp, uv + vec2f(-texel.x, 0.0)).rgb);
+    let l_e = fx_luma(textureSample(src_tex, samp, uv + vec2f(texel.x, 0.0)).rgb);
+    let l_min = min(l_m, min(min(l_n, l_s), min(l_w, l_e)));
+    let l_max = max(l_m, max(max(l_n, l_s), max(l_w, l_e)));
+    let range = l_max - l_min;
+    if range < max(0.0312, l_max * 0.125) { return c_m; }
+    let l_nw = fx_luma(textureSample(src_tex, samp, uv + vec2f(-texel.x, -texel.y)).rgb);
+    let l_ne = fx_luma(textureSample(src_tex, samp, uv + vec2f(texel.x, -texel.y)).rgb);
+    let l_sw = fx_luma(textureSample(src_tex, samp, uv + vec2f(-texel.x, texel.y)).rgb);
+    let l_se = fx_luma(textureSample(src_tex, samp, uv + vec2f(texel.x, texel.y)).rgb);
+    var dir = vec2f((l_nw + l_ne) - (l_sw + l_se), (l_nw + l_sw) - (l_ne + l_se));
+    if length(dir) < 0.0001 { return c_m; }
+    dir = normalize(dir) * texel * params.fxaa_span;
+    let c_a = textureSample(src_tex, samp, uv + dir * 0.5).rgb;
+    let c_b = textureSample(src_tex, samp, uv - dir * 0.5).rgb;
+    let avg = (c_a + c_b) * 0.5;
+    let blend = clamp(abs(fx_luma(avg) - l_m) / range, 0.0, 1.0);
+    return mix(c_m, avg, blend * 0.75);
+}
+@fragment fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
+    let uv = pos.xy / params.resolution;
+    var col = textureSample(src_tex, samp, uv).rgb;
+    if (params.flags & 4u) != 0u { col = fxaa_filter(uv); }
+    if (params.flags & 16u) != 0u { col += textureSample(bloom_tex, samp, uv).rgb * params.bloom_strength; }
+    if (params.flags & 2u) != 0u {
+        let texel = 1.0 / params.resolution;
+        let avg = (textureSample(src_tex, samp, uv + vec2f(texel.x, 0.0)).rgb + textureSample(src_tex, samp, uv - vec2f(texel.x, 0.0)).rgb + textureSample(src_tex, samp, uv + vec2f(0.0, texel.y)).rgb + textureSample(src_tex, samp, uv - vec2f(0.0, texel.y)).rgb) * 0.25;
+        col += (col - avg) * params.sharpen;
+    }
+    if (params.flags & 1u) != 0u {
+        col += params.brightness;
+        col = (col - 0.5) * params.contrast + 0.5;
+        let luma = fx_luma(col);
+        col = mix(vec3f(luma), col, params.saturation);
+    }
+    if (params.flags & 8u) != 0u {
+        let d = distance(uv, vec2f(0.5, 0.5));
+        col *= 1.0 - params.vignette * smoothstep(0.45, 0.9, d);
+    }
+    return vec4f(clamp(col, vec3f(0.0), vec3f(1.0)), 1.0);
+}";
+
+// Downsample + bright-pass: a 2x2 box average of the full-res
+// source (each bloom texel covers 4x4 source texels) keeping only
+// what exceeds the threshold, so the blur adds a soft glow, not a
+// grey wash.
+const FX_DOWNSAMPLE_FS: &str = "
+@fragment fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
+    let uv = pos.xy / params.bloom_size;
+    let texel = 2.0 / params.resolution;
+    let c = (textureSample(src_tex, samp, uv + vec2f(-texel.x, -texel.y)).rgb + textureSample(src_tex, samp, uv + vec2f(texel.x, -texel.y)).rgb + textureSample(src_tex, samp, uv + vec2f(-texel.x, texel.y)).rgb + textureSample(src_tex, samp, uv + vec2f(texel.x, texel.y)).rgb) * 0.25;
+    let brightest = max(c.r, max(c.g, c.b));
+    let t = clamp((brightest - params.bloom_threshold) / max(1.0 - params.bloom_threshold, 0.001), 0.0, 1.0);
+    return vec4f(c * t, 1.0);
+}";
+
+// Blur: one 9-tap gaussian on the quarter-res bloom texture.
+// Weights sum to exactly 1 (0.25 + 4x0.125 + 4x0.0625), so the
+// pass never brightens or darkens on its own. One 3x3 blur at
+// quarter res is a ~12x12 blur at full res — soft enough for
+// bloom without a second separable pass.
+const FX_BLUR_FS: &str = "
+@fragment fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
+    let uv = pos.xy / params.bloom_size;
+    let t = 1.0 / params.bloom_size;
+    var c = textureSample(src_tex, samp, uv).rgb * 0.25;
+    c += textureSample(src_tex, samp, uv + vec2f(t.x, 0.0)).rgb * 0.125;
+    c += textureSample(src_tex, samp, uv - vec2f(t.x, 0.0)).rgb * 0.125;
+    c += textureSample(src_tex, samp, uv + vec2f(0.0, t.y)).rgb * 0.125;
+    c += textureSample(src_tex, samp, uv - vec2f(0.0, t.y)).rgb * 0.125;
+    c += textureSample(src_tex, samp, uv + vec2f(t.x, t.y)).rgb * 0.0625;
+    c += textureSample(src_tex, samp, uv + vec2f(-t.x, t.y)).rgb * 0.0625;
+    c += textureSample(src_tex, samp, uv + vec2f(t.x, -t.y)).rgb * 0.0625;
+    c += textureSample(src_tex, samp, uv - vec2f(t.x, t.y)).rgb * 0.0625;
+    return vec4f(c, 1.0);
+}";
+
+    // Post FX chain (live state in fx.rs). While any effect is on,
+    // present() runs this instead of the plain 1:1 blit: a bloom
+    // downsample + blur on quarter-res textures, then one composite
+    // pass to the surface that adds bloom and applies grade / FXAA /
+    // sharpen / vignette. When everything is off the old blit path
+    // runs untouched, so the game looks identical to before.
+    // Cost, bounded: 1 fullscreen pass (composite) + 2 quarter-res
+    // passes only while bloom is on; 2 quarter-res textures (~1 MB
+    // at phone back-buffer sizes) + 1 64-byte uniform, all created
+    // once and reused — nothing is allocated per frame in steady
+    // state. The chain survives the memory purge on purpose (like
+    // blit): the purge's job is game pipelines, and this is tiny.
+    // No depth effects: the engine's depth layout is unverified, so
+    // nothing here reads depth. SMAA is deliberately not built: it
+    // needs extra edge textures and several passes, too heavy for
+    // the phone's fill rate on top of the game itself; FXAA is the
+    // cheap anti-aliasing here.
+    fn fx_module(&self, src: String) -> ShaderModule {
+        self.device.create_shader_module(ShaderModuleDescriptor { label: None, source: ShaderSource::Wgsl(src.into()) })
+    }
+
+    // Build (or rebuild, when the back-buffer size, source texture
+    // or bloom toggle changed) the chain for this frame. Returns
+    // false when the chain cannot run at all — the back-buffer
+    // format is not filterable, so textureSample cannot read it —
+    // and the caller falls back to the plain blit.
+    fn fx_ensure_chain(&mut self, src_id: u32, src_format: TextureFormat, w: u32, h: u32, bloom_on: bool) -> bool {
+        // Filterability gate, checked on every call, not just at
+        // creation: the FX shaders sample with textureSample (FXAA,
+        // blur, sharpen all need filtered reads), and a recreated
+        // back buffer could in principle change format. The plain
+        // blit only uses textureLoad, so a non-filterable back
+        // buffer still blits fine — FX just stays off. log_once
+        // dedupes the line.
+        if !self.adapter.get_texture_format_features(src_format).flags.contains(TextureFormatFeatureFlags::FILTERABLE) {
+            log_once("fx-unfilterable", &format!("[fx] back-buffer format {src_format:?} is not filterable — post FX disabled, plain blit in use"));
+            return false;
+        }
+        if self.fx_chain.is_none() {
+            let bloom_format = if self.adapter.get_texture_format_features(TextureFormat::Rgba16Float).flags.contains(TextureFormatFeatureFlags::FILTERABLE) {
+                TextureFormat::Rgba16Float
+            } else {
+                // 16F not filterable on this device (not expected on
+                // Apple GPUs): bloom runs in the back-buffer format
+                // instead — same math, less headroom.
+                src_format
+            };
+            // Build everything in locals first: simple_pipeline
+            // borrows &self, and the chain slot is filled last.
+            let dev = self.device.clone();
+            let sampler = dev.create_sampler(&SamplerDescriptor { label: Some("fx"), address_mode_u: AddressMode::ClampToEdge, address_mode_v: AddressMode::ClampToEdge, address_mode_w: AddressMode::ClampToEdge, mag_filter: FilterMode::Linear, min_filter: FilterMode::Linear, mipmap_filter: FilterMode::Nearest, ..Default::default() });
+            let uniform = dev.create_buffer(&BufferDescriptor { label: Some("fx-uniform"), size: 64, usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST, mapped_at_creation: false });
+            let composite = self.simple_pipeline(&self.fx_module([FX_PARAMS, FX_COMPOSITE_BINDINGS, FX_VS, FX_COMPOSITE_FS].concat()), Some(self.surface_format), None);
+            let downsample = self.simple_pipeline(&self.fx_module([FX_PARAMS, FX_PLAIN_BINDINGS, FX_VS, FX_DOWNSAMPLE_FS].concat()), Some(bloom_format), None);
+            let blur = self.simple_pipeline(&self.fx_module([FX_PARAMS, FX_PLAIN_BINDINGS, FX_VS, FX_BLUR_FS].concat()), Some(bloom_format), None);
+            self.fx_chain = Some(FxChain {
+                composite, downsample, blur, sampler, uniform,
+                bloom_a: None, bloom_b: None, bloom_format,
+                key: (u32::MAX, 0, 0, false),
+                composite_bg: None, downsample_bg: None, blur_bg: None,
+                last_uniform: [0xFF; 64],
+            });
+            log(&format!("[fx] chain created (bloom format {bloom_format:?})"));
+        }
+        // Rebuild targets when the size, source texture or bloom
+        // toggle changed: fresh quarter-res bloom textures and
+        // fresh bind groups. The old textures are dropped here;
+        // wgpu keeps the GPU memory alive until submitted work
+        // using them finishes, so dropping mid-frame is safe.
+        let key = (src_id, w, h, bloom_on);
+        let needs_rebuild = self.fx_chain.as_ref().map(|c| c.key != key).unwrap_or(false);
+        if needs_rebuild {
+            let dev = self.device.clone();
+            let Some(src_tex) = self.tex(src_id).map(|t| t.tex.clone()) else {
+                return false;
+            };
+            let bloom_format = self.fx_chain.as_ref().unwrap().bloom_format;
+            let (bloom_a, bloom_b) = if bloom_on {
+                let (bw, bh) = ((w / 4).max(1), (h / 4).max(1));
+                let mk = |label: &'static str| {
+                    let tex = dev.create_texture(&TextureDescriptor { label: Some(label), size: Extent3d { width: bw, height: bh, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1, dimension: TextureDimension::D2, format: bloom_format, usage: TextureUsages::TEXTURE_BINDING | TextureUsages::RENDER_ATTACHMENT, view_formats: &[] });
+                    let view = tex.create_view(&TextureViewDescriptor::default());
+                    (tex, view)
+                };
+                (Some(mk("fx-bloom-a")), Some(mk("fx-bloom-b")))
+            } else {
+                (None, None)
+            };
+            let chain = self.fx_chain.as_mut().unwrap();
+            let src_view = src_tex.create_view(&TextureViewDescriptor::default());
+            // Bloom off: bind the source view again at the bloom
+            // slot. Same texture at two bindings is legal, and the
+            // shader never samples it while bloom is off.
+            let bloom_view = bloom_b.as_ref().map(|(_, v)| v.clone()).unwrap_or_else(|| src_view.clone());
+            let composite = chain.composite.clone();
+            let downsample = chain.downsample.clone();
+            let blur = chain.blur.clone();
+            let sampler = chain.sampler.clone();
+            let uniform = chain.uniform.clone();
+            chain.composite_bg = Some(dev.create_bind_group(&BindGroupDescriptor { label: Some("fx-composite"), layout: &composite.get_bind_group_layout(0), entries: &[
+                BindGroupEntry { binding: 0, resource: BindingResource::TextureView(&src_view) },
+                BindGroupEntry { binding: 1, resource: BindingResource::Sampler(&sampler) },
+                BindGroupEntry { binding: 2, resource: BindingResource::TextureView(&bloom_view) },
+                BindGroupEntry { binding: 3, resource: uniform.as_entire_binding() },
+            ] }));
+            chain.downsample_bg = if bloom_on {
+                Some(dev.create_bind_group(&BindGroupDescriptor { label: Some("fx-downsample"), layout: &downsample.get_bind_group_layout(0), entries: &[
+                    BindGroupEntry { binding: 0, resource: BindingResource::TextureView(&src_view) },
+                    BindGroupEntry { binding: 1, resource: BindingResource::Sampler(&sampler) },
+                    BindGroupEntry { binding: 2, resource: uniform.as_entire_binding() },
+                ] }))
+            } else {
+                None
+            };
+            chain.blur_bg = if bloom_on {
+                let bloom_a_view = bloom_a.as_ref().unwrap().1.clone();
+                Some(dev.create_bind_group(&BindGroupDescriptor { label: Some("fx-blur"), layout: &blur.get_bind_group_layout(0), entries: &[
+                    BindGroupEntry { binding: 0, resource: BindingResource::TextureView(&bloom_a_view) },
+                    BindGroupEntry { binding: 1, resource: BindingResource::Sampler(&sampler) },
+                    BindGroupEntry { binding: 2, resource: uniform.as_entire_binding() },
+                ] }))
+            } else {
+                None
+            };
+            chain.bloom_a = bloom_a;
+            chain.bloom_b = bloom_b;
+            chain.key = key;
+        }
+        true
+    }
+
+    // One fullscreen-triangle pass: pipeline + bind group into a
+    // target view. The pass is dropped at scope end, so the next
+    // pass on the same encoder starts cleanly.
+    fn fx_draw(&mut self, pipeline: &RenderPipeline, bg: &BindGroup, target: &TextureView) {
+        let enc = self.encoder();
+        let mut p = enc.begin_render_pass(&RenderPassDescriptor {
+            label: None,
+            color_attachments: &[Some(RenderPassColorAttachment { view: target, depth_slice: None, resolve_target: None, ops: Operations { load: LoadOp::Clear(Color::BLACK), store: StoreOp::Store } })],
+            depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None, multiview_mask: None,
+        });
+        p.set_pipeline(pipeline);
+        p.set_bind_group(0, bg, &[]);
+        p.draw(0..3, 0..1);
+    }
+
+    // Post FX present: runs the chain and returns true when a frame
+    // reached the surface. Returns false when the chain cannot run
+    // (back-buffer format not filterable, or the source texture is
+    // gone) so the caller falls back to the plain blit — the game
+    // never loses its frame because an effect failed. Runs inside
+    // the blink-guard's non-held branch and after the surface
+    // texture is acquired, so held frames still skip everything
+    // and a missing surface frame skips the FX passes instead of
+    // wasting them.
+    fn present_fx(&mut self, id: u32, view: &TextureView, w: u32, h: u32) -> bool {
+        let params = crate::fx::fx_snapshot();
+        if !params.any_on() {
+            return false;
+        }
+        let Some(src_format) = self.tex(id).map(|t| t.format) else {
+            return false;
+        };
+        if !self.fx_ensure_chain(id, src_format, w, h, params.bloom) {
+            return false;
+        }
+        // Uniform: rewrite when the live state changed, or when the
+        // chain was just (re)created (last_uniform is the 0xFF
+        // sentinel then, which no real uniform can equal).
+        let bytes = crate::fx::fx_uniform_bytes(&params, w, h);
+        {
+            let chain = self.fx_chain.as_mut().unwrap();
+            if crate::fx::fx_take_dirty() || bytes != chain.last_uniform {
+                self.queue.write_buffer(&chain.uniform, 0, &bytes);
+                chain.last_uniform = bytes;
+            }
+        }
+        // Clone the handles out of the chain first: encoder() takes
+        // &mut self, so the chain cannot stay borrowed while the
+        // passes are recorded (same pattern as the blit below).
+        let (composite, downsample, blur, composite_bg, downsample_bg, blur_bg, bloom_a_view, bloom_b_view) = {
+            let chain = self.fx_chain.as_ref().unwrap();
+            (
+                chain.composite.clone(),
+                chain.downsample.clone(),
+                chain.blur.clone(),
+                chain.composite_bg.clone().unwrap(),
+                chain.downsample_bg.clone(),
+                chain.blur_bg.clone(),
+                chain.bloom_a.as_ref().map(|(_, v)| v.clone()),
+                chain.bloom_b.as_ref().map(|(_, v)| v.clone()),
+            )
+        };
+        if params.bloom {
+            // Downsample + bright-pass into bloom_a, then a 9-tap
+            // blur into bloom_b. Quarter-res, so both passes cost
+            // ~1/16 of a fullscreen pass each.
+            let (Some(bloom_a_view), Some(bloom_b_view)) = (bloom_a_view, bloom_b_view) else {
+                return false;
+            };
+            let (Some(downsample_bg), Some(blur_bg)) = (downsample_bg, blur_bg) else {
+                return false;
+            };
+            self.fx_draw(&downsample, &downsample_bg, &bloom_a_view);
+            self.fx_draw(&blur, &blur_bg, &bloom_b_view);
+        }
+        self.fx_draw(&composite, &composite_bg, view);
+        true
+    }
+
+    // The plain 1:1 blit, unchanged from before Post FX existed:
+    // back buffer sampled straight to the surface. Kept as its own
+    // method so present() can fall back to it whenever the FX chain
+    // cannot run.
+    fn present_blit(&mut self, id: u32, tex: &Texture, view: &TextureView) {
+        if self.blit.is_none() {
+            let module = self.device.create_shader_module(ShaderModuleDescriptor { label: Some("blit"), source: ShaderSource::Wgsl(
+                "@group(0) @binding(0) var src: texture_2d<f32>;
+                 @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f { var p = array<vec2f, 3>(vec2f(-1, -1), vec2f(3, -1), vec2f(-1, 3)); return vec4f(p[i], 0, 1); }
+                 @fragment fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f { return textureLoad(src, vec2i(pos.xy), 0); }".into()) });
+            self.blit = Some(self.simple_pipeline(&module, Some(self.surface_format), None));
+        }
+        let blit = self.blit.clone().unwrap();
+        let dev = self.device.clone();
+        let bg = {
+            let t = self.tex_mut(id).unwrap();
+            t.blit_bg.get_or_insert_with(|| {
+                let v = tex.create_view(&TextureViewDescriptor { dimension: Some(TextureViewDimension::D2), base_mip_level: 0, mip_level_count: Some(1), base_array_layer: 0, array_layer_count: Some(1), ..Default::default() });
+                dev.create_bind_group(&BindGroupDescriptor { label: None, layout: &blit.get_bind_group_layout(0), entries: &[BindGroupEntry { binding: 0, resource: BindingResource::TextureView(&v) }] })
+            }).clone()
+        };
+        {
+            let enc = self.encoder();
+            let mut p = enc.begin_render_pass(&RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(RenderPassColorAttachment { view, depth_slice: None, resolve_target: None, ops: Operations { load: LoadOp::Clear(Color::BLACK), store: StoreOp::Store } })],
+                depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None, multiview_mask: None,
+            });
+            p.set_pipeline(&blit);
+            p.set_bind_group(0, &bg, &[]);
+            p.draw(0..3, 0..1);
+        }
+    }
+
     fn present(&mut self, id: u32) {
         let now = Instant::now();
         let fps = if self.pressure_until.is_some_and(|until| now < until) { 30 } else { crate::performance::frame_limit() };
@@ -3522,22 +3903,6 @@ impl Gpu {
                 log(&format!("surface configured {w}x{h} {:?}", self.surface_format));
                 window.request_redraw();
             }
-            if self.blit.is_none() {
-                let module = self.device.create_shader_module(ShaderModuleDescriptor { label: Some("blit"), source: ShaderSource::Wgsl(
-                    "@group(0) @binding(0) var src: texture_2d<f32>;
-                     @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f { var p = array<vec2f, 3>(vec2f(-1, -1), vec2f(3, -1), vec2f(-1, 3)); return vec4f(p[i], 0, 1); }
-                     @fragment fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f { return textureLoad(src, vec2i(pos.xy), 0); }".into()) });
-                self.blit = Some(self.simple_pipeline(&module, Some(self.surface_format), None));
-            }
-            let blit = self.blit.clone().unwrap();
-            let dev = self.device.clone();
-            let bg = {
-                let t = self.tex_mut(id).unwrap();
-                t.blit_bg.get_or_insert_with(|| {
-                    let v = tex.create_view(&TextureViewDescriptor { dimension: Some(TextureViewDimension::D2), base_mip_level: 0, mip_level_count: Some(1), base_array_layer: 0, array_layer_count: Some(1), ..Default::default() });
-                    dev.create_bind_group(&BindGroupDescriptor { label: None, layout: &blit.get_bind_group_layout(0), entries: &[BindGroupEntry { binding: 0, resource: BindingResource::TextureView(&v) }] })
-                }).clone()
-            };
             let frame = match self.surface.as_ref().unwrap().0.get_current_texture() {
                 CurrentSurfaceTexture::Success(f) | CurrentSurfaceTexture::Suboptimal(f) => Some(f),
                 other => { log_once("surface", &format!("surface texture unavailable: {other:?}")); self.surface_size = (0, 0); None }
@@ -3545,16 +3910,12 @@ impl Gpu {
             if let Some(frame) = frame {
                 let view = frame.texture.create_view(&TextureViewDescriptor::default());
                 self.use_tex(id);
-                {
-                    let enc = self.encoder();
-                    let mut p = enc.begin_render_pass(&RenderPassDescriptor {
-                        label: None,
-                        color_attachments: &[Some(RenderPassColorAttachment { view: &view, depth_slice: None, resolve_target: None, ops: Operations { load: LoadOp::Clear(Color::BLACK), store: StoreOp::Store } })],
-                        depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None, multiview_mask: None,
-                    });
-                    p.set_pipeline(&blit);
-                    p.set_bind_group(0, &bg, &[]);
-                    p.draw(0..3, 0..1);
+                // Post FX replaces the plain blit while any effect is
+                // on; present_fx returns false when the chain cannot
+                // run, and the plain blit runs instead — the game
+                // never loses its frame because an effect failed.
+                if !(crate::fx::fx_any_on() && self.present_fx(id, &view, w, h)) {
+                    self.present_blit(id, &tex, &view);
                 }
                 self.flush();
                 self.queue.present(frame);
