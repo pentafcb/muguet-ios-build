@@ -2357,19 +2357,20 @@ struct LauncherView: View {
         }
     }
 
+    // Centered, no scroll: three tiles fit, and the rail sits in the
+    // middle of the screen instead of hugging the left edge.
     private var modeRail: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(alignment: .bottom, spacing: 12) {
-                modeTile(title: "Story", subtitle: "Story Mode", icon: "gamecontroller", image: "TileStory", index: 0)
-                modeTile(title: "Sandbox", subtitle: "Sandbox · Free Roam", icon: "map", image: "TileSandbox", index: 1)
-                modeTile(title: "Online", subtitle: "Online · Multiplayer", icon: "globe", image: "TileOnline", index: 2)
-            }
+        HStack(alignment: .bottom, spacing: 16) {
+            modeTile(title: "Story", subtitle: "Story Mode", icon: "gamecontroller", image: "TileStory", index: 0)
+            modeTile(title: "Sandbox", subtitle: "Sandbox · Free Roam", icon: "map", image: "TileSandbox", index: 1)
+            modeTile(title: "Online", subtitle: "Online · Multiplayer", icon: "globe", image: "TileOnline", index: 2)
         }
+        .frame(maxWidth: .infinity, alignment: .center)
     }
 
     private func modeTile(title: String, subtitle: String, icon: String, image: String, index: Int) -> some View {
         let focused = selectedMode == index
-        let size: CGFloat = focused ? 128 : 100
+        let size: CGFloat = focused ? 172 : 140
         return Button { selectMode(index) } label: {
             ZStack {
                 // GTA artwork photo, full-bleed in the tile.
@@ -2381,11 +2382,11 @@ struct LauncherView: View {
                 // stay readable over the photo.
                 LinearGradient(colors: [Color.black.opacity(0.0), Color.black.opacity(0.72)],
                                startPoint: .top, endPoint: .bottom)
-                VStack(spacing: 6) {
+                VStack(spacing: 8) {
                     Image(systemName: icon)
-                        .font(.system(size: 30, weight: .light))
+                        .font(.system(size: 36, weight: .light))
                     Text(title)
-                        .font(.system(size: 11, weight: .medium))
+                        .font(.system(size: 13, weight: .medium))
                 }
                 .foregroundColor(.white.opacity(0.9))
                 // Subtitle strip, only on the focused tile.
@@ -2393,7 +2394,7 @@ struct LauncherView: View {
                     VStack {
                         Spacer()
                         Text(subtitle)
-                            .font(.system(size: 11, weight: .medium))
+                            .font(.system(size: 12, weight: .medium))
                             .foregroundColor(.white)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.horizontal, 9)
@@ -2402,9 +2403,9 @@ struct LauncherView: View {
                 }
             }
             .frame(width: size, height: size)
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .stroke(focused ? Color.white : .clear, lineWidth: 3)
                     .padding(2)
             )
