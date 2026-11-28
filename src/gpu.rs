@@ -870,6 +870,15 @@ pub struct Gpu {
     draws: u64,
     skipped: u64,
     presents: u64,
+    // Frames held back by the blink guard in present(): the game tried
+    // to draw and every draw failed, so the backbuffer was only the
+    // clear color. Plus the draws/skipped snapshots taken at the end
+    // of each present, so the next present can tell a frame that drew
+    // nothing because every draw failed from a legitimate clear-only
+    // frame (no draws attempted at all).
+    held_frames: u64,
+    draws_at_present: u64,
+    skipped_at_present: u64,
     pipe_creates: u64,
     fps_t0: Instant,
     fps_n0: u64,
@@ -998,7 +1007,7 @@ impl Gpu {
             pending_resolve: Vec::new(), pending_events: Vec::new(), pending_maps: Vec::new(), counter_src: None, counter_slot: 0,
             frame_slot_done: (0..FRAME_SLOTS).map(|_| None).collect(), last_submit: None, vb_avail: [0; 16],
             dbg_idx: if dbg != 0 { dbg + 424 } else { 0 },
-            draws: 0, skipped: 0, presents: 0, pipe_creates: 0, fps_t0: Instant::now(), fps_n0: 0, fps_d0: 0,
+            draws: 0, skipped: 0, presents: 0, held_frames: 0, draws_at_present: 0, skipped_at_present: 0, pipe_creates: 0, fps_t0: Instant::now(), fps_n0: 0, fps_d0: 0,
             frame_pacer: Default::default(), last_memory_check: Instant::now(), last_cleanup: Instant::now() - Duration::from_secs(60), pressure_until: None, critical_since: None, paused_since: None, resume_since: None,
             requested_refresh: 0,
             errors, inflight: Arc::new(AtomicU64::new(0)), submits: 0, submits0: 0, passes: 0, passes0: 0,
@@ -3396,7 +3405,22 @@ impl Gpu {
         }
         self.materialize_clears(id);
         let visible = !OCCLUDED.load(Ordering::Relaxed);
-        if let (Some(t), Some(_), true) = (self.tex(id), self.surface.as_ref(), visible) {
+        // Blink guard: a frame the game tried to draw but every draw
+        // failed — its pipelines are still compiling, usually right
+        // after a load streams new shaders or a memory purge threw
+        // every compiled pipeline away — would present as a bare
+        // cleared backbuffer: one black frame, the blink. Hold it and
+        // keep the previous frame on screen instead; the tail below
+        // still runs, so compiles land and the next frame draws. A
+        // frame with no draws AND no failed draws is a legitimate
+        // clear-only frame (fade, loading black) and presents normally.
+        // The clear was already consumed above, so the next frame
+        // draws onto the cleared buffer exactly as the game intended.
+        let drew = self.draws - self.draws_at_present;
+        let failed = self.skipped - self.skipped_at_present;
+        let hold_frame = visible && drew == 0 && failed > 0;
+        if hold_frame { self.held_frames += 1; }
+        if let (Some(t), Some(_), true) = (self.tex(id), self.surface.as_ref(), visible && !hold_frame) {
             let (w, h) = (t.desc.w, t.desc.h);
             let tex = t.tex.clone();
             self.end_pass();
@@ -3463,6 +3487,8 @@ impl Gpu {
         }
         self.collect_pipelines();
         self.presents += 1;
+        self.draws_at_present = self.draws;
+        self.skipped_at_present = self.skipped;
         if cfg!(target_os = "ios") && self.presents % 120 == 0 { self.prune_graphics_cache(); }
         self.log_fps();
 
@@ -3730,9 +3756,9 @@ impl Gpu {
             let displayed = PRESENTS.load(Ordering::Relaxed);
             let frames = displayed - self.fps_n0;
             log(&format!(
-                "fps: {:.1} ({} MB memory, game heap {} MB, {} frames, {} clears folded, {} draws/frame, {} draws waiting for a compiling pipeline, {:.1} submits/frame, {:.1} passes/frame, {} skipped total, pipelines {}, bind groups cached {}, validation errors {})",
+                "fps: {:.1} ({} MB memory, game heap {} MB, {} frames, {} clears folded, {} draws/frame, {} draws waiting for a compiling pipeline, {:.1} submits/frame, {:.1} passes/frame, {} skipped total, pipelines {}, bind groups cached {}, validation errors {}, {} held frames (blink guard))",
                 frames as f64 / dt, crate::footprint_mb(), crate::RT.get().map(|r| r.mem.data_size() >> 20).unwrap_or(0), frames, self.clears_folded, (self.draws - self.fps_d0) / frames.max(1), self.pending_skips - self.pending_skips0, (self.submits - self.submits0) as f64 / frames.max(1) as f64,
-                (self.passes - self.passes0) as f64 / frames.max(1) as f64, self.skipped, self.pipe_creates, self.bind_groups.len(), self.errors.load(Ordering::Relaxed)
+                (self.passes - self.passes0) as f64 / frames.max(1) as f64, self.skipped, self.pipe_creates, self.bind_groups.len(), self.errors.load(Ordering::Relaxed), self.held_frames
             ));
             if let Some(r) = self.instance.generate_report() {
                 let h = &r.hub;
