@@ -1816,8 +1816,13 @@ struct CLSettingsPanel: View {
         // installModFile only stashes the picked URL; onDismiss fires
         // once the picker is gone and the hierarchy is clean again.
         .sheet(isPresented: $pickingMod, onDismiss: {
-            if modNameSheetURL != nil {
-                showingModNameSheet = true
+            // Present on the next runloop turn: even after onDismiss,
+            // UIKit can still be settling the picker dismissal, and
+            // presenting in the same turn blacked the sheet.
+            DispatchQueue.main.async {
+                if modNameSheetURL != nil {
+                    showingModNameSheet = true
+                }
             }
         }) {
             DocumentPicker(isPresented: $pickingMod, contentTypes: [UTType.zip, UTType(tag: "rpf", tagClass: .filenameExtension, conformingTo: .data) ?? UTType.data], onPick: { url in
@@ -2188,16 +2193,16 @@ struct LauncherView: View {
                         .blur(radius: 110)
                         .offset(x: geo.size.width * 0.5 - 280, y: -190)
                 } else {
-                    // GTA V logo wallpaper, zoomed and dead-center: the
-                    // logo is small in the 600x400 image, so plain fill
-                    // left it small and lost behind the UI. The explicit
-                    // geo-sized frame centers it on the screen and the
-                    // 1.8x zoom makes the V big enough to read around
-                    // the mode rail and chips.
+                    // GTA V logo wallpaper, dead-center: the logo is
+                    // centered in the 600x400 image (its bright core was
+                    // at 42% height, shifted to 50%), so plain fill
+                    // centers the logo itself. The explicit geo-sized
+                    // frame centers it on the screen and the 1.2x zoom
+                    // makes the V big without cropping its arms.
                     Image("BackgroundLosSantos")
                         .resizable()
                         .aspectRatio(contentMode: .fill)
-                        .scaleEffect(1.8)
+                        .scaleEffect(1.2)
                         .frame(width: geo.size.width, height: geo.size.height)
                         .clipped()
                         .ignoresSafeArea()
