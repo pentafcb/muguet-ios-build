@@ -2687,10 +2687,15 @@ public func muguetOpenMenu() {
 // FiveM-style in-game console (F8): a dark panel over the top ~55%
 // of the screen with the latest log lines and an input row. It polls
 // muguet_console_tail() while open. Header has an Auto-scroll toggle
-// (on by default); off stops new lines from yanking the view to the
-// bottom so history can be read. Commands: car/spawn, heal, kill,
-// fix, tp, coords, weather, cheat, fp, ram, dlc, reload, lowram,
-// ultralow, dv, tpm, quit, help, clear, close — see help in the console.
+// (on by default); off FREEZES the displayed text — the 0.5 s poller
+// keeps running, but logText is not replaced, so new lines arriving
+// every second cannot push the top lines out of view and make the
+// panel look like it is still scrolling. Turning it back on resumes
+// live updates and jumps to the bottom. Typing a command also resumes
+// live view, so its output is visible at once. Commands: car/spawn,
+// heal, kill, fix, tp, coords, weather, cheat, fp, ram, dlc, reload,
+// lowram, ultralow, dv, tpm, quit, help, clear, close — see help in
+// the console.
 // The auto-scroll flag lives in a reference type, not a plain @State
 // Bool: an .onChange(of: logText) closure captures the flag from the
 // render pass that created it, so a @State Bool read there can stay
@@ -2767,6 +2772,13 @@ struct ConsoleView: View {
     }
 
     func poll() {
+        // Auto-scroll off means frozen: the tail keeps rolling on the
+        // Rust side (new lines every second from the RAM tracker), and
+        // replacing logText would push the top lines out of view, so
+        // the panel would look like it was still scrolling even though
+        // the scroll offset never moved. Skip the update entirely;
+        // turning auto-scroll back on resumes it on the next tick.
+        if !scrollState.autoScroll { return }
         guard let ptr = muguet_console_tail() else { return }
         let text = String(cString: ptr)
         if text != logText { logText = text }
@@ -2778,6 +2790,9 @@ struct ConsoleView: View {
         input = ""
         cmd.withCString { muguet_console_command($0) }
         if cmd == "close" { onClose(); return }
+        // A typed command wants its answer: resume live view so the
+        // output appears at once instead of waiting behind the freeze.
+        if !scrollState.autoScroll { scrollState.autoScroll = true }
         poll()
     }
 }
