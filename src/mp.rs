@@ -2603,7 +2603,11 @@ fn run_spawn_info(c: &mut Cmd, code: &str) {
     if !report.model_names.is_empty() && !report.model_names.iter().any(|m| m.eq_ignore_ascii_case(code)) {
         crate::debug::console_line(&format!("[spawninfo] the rpf names this model '{}', not '{code}' — spawn with: car {}", report.model_names[0], report.model_names[0]));
     } else if in_cd == Some(0) {
-        if report.parse_error.is_some() || report.encrypted_toc {
+        if report.model_names.is_empty() && crate::mods::base_vehicles_meta_has(code) {
+            crate::debug::console_line(&format!(
+                "[spawninfo] model {code} is registered in the base vehicles.meta (merged from the mod's vehicles.meta) — try: car {code}"
+            ));
+        } else if report.parse_error.is_some() || report.encrypted_toc {
             crate::debug::console_line("[spawninfo] the model is not in the game files and the pack could not be fully read — see the [rpf] lines above");
         } else if !report.setup2 || !report.content || report.vehicles_meta.is_none() || !report.meta_in_data_files || report.meta_enabled_by.is_empty() {
             crate::debug::console_line("[spawninfo] the model is not in the game files and the pack is incomplete — see the [rpf] verdict above");

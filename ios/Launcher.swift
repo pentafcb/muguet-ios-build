@@ -135,6 +135,34 @@ final class Settings: ObservableObject {
         muguet_reload_settings()
     }
 
+    /// Rockstar defaults: wipe the in-game settings.xml, then set the
+    /// launcher fields to the safe defaults (Shader High, MSAA Off,
+    /// Shadows Normal, 120 FPS) and save + reload. Shared by the home
+    /// presets card and the settings drawer.
+    func applyRockstarDefaults() {
+        resetGraphicsSettings()
+        scale = 0.5
+        textures = 0
+        fps = 120
+        shadowQuality = 1
+        shadowDistance = 1.0
+        reflectionQuality = 1
+        grassQuality = 0
+        waterQuality = 0
+        particleQuality = 0
+        postFx = 0
+        anisotropicFiltering = 0
+        fxaa = true
+        cityDensity = 0.5
+        pedDensity = 0.5
+        distanceScaling = 0.0
+        deepOptimization = true
+        ultraLow = false
+        promotionSync = true
+        do { try save() } catch {}
+        muguet_reload_settings()
+    }
+
     var formattedCreateCode: String {
         let m = mode == 1 ? "S" : "B"
         let p = pvp ? "X" : "P"
@@ -391,6 +419,10 @@ func muguet_remove_mod(_ name: UnsafePointer<CChar>) -> Bool
 func muguet_mod_error() -> UnsafePointer<CChar>?
 @_silgen_name("muguet_mod_name")
 func muguet_mod_name() -> UnsafePointer<CChar>?
+@_silgen_name("muguet_install_vehicles_meta")
+func muguet_install_vehicles_meta(_ modName: UnsafePointer<CChar>, _ metaPath: UnsafePointer<CChar>) -> Bool
+@_silgen_name("muguet_vehicles_meta_models")
+func muguet_vehicles_meta_models() -> UnsafePointer<CChar>?
 
 final class Importer: ObservableObject {
     static let shared = Importer()
@@ -1221,7 +1253,7 @@ struct CLToggle: View {
                 Spacer()
                 ZStack(alignment: isOn ? .trailing : .leading) {
                     Capsule()
-                        .fill(isOn ? Color(hex: "7EE787") : Color.white.opacity(0.18))
+                        .fill(isOn ? muguetPink : Color.white.opacity(0.18))
                         .frame(width: 50, height: 30)
                     Circle()
                         .fill(Color.white)
@@ -1250,9 +1282,9 @@ struct CLChipPicker<Value: Hashable>: View {
                         Button { selection = option.1 } label: {
                             Text(option.0)
                                 .font(.system(size: 14, weight: selection == option.1 ? .bold : .regular))
-                                .foregroundColor(selection == option.1 ? Color(hex: "0B0D12") : .white)
+                                .foregroundColor(.white)
                                 .padding(.horizontal, 16).padding(.vertical, 8)
-                                .background(Capsule().fill(selection == option.1 ? Color.white : Color.white.opacity(0.1)))
+                                .background(Capsule().fill(selection == option.1 ? muguetPink : Color.white.opacity(0.1)))
                         }
                         .buttonStyle(.plain)
                     }
@@ -1335,28 +1367,46 @@ struct CLCapsuleButton: View {
 
 // The three graphics presets, shared by the home chips row and the settings
 // panel so the actions and alert messages can never drift apart.
+// The three graphics presets, shared by the home card and the settings
+// drawer so the actions and alert messages can never drift apart.
+// Web style: dark segmented buttons, the active preset pink.
 struct CLPresetButtons: View {
     @ObservedObject var s: Settings
     @Binding var resetAlertMessage: String
     @Binding var showingResetAlert: Bool
+
     var body: some View {
-        HStack(spacing: 8) {
-            CLCapsuleButton(title: "120 FPS", icon: "bolt.fill") {
-                s.apply120FpsBoost()
-                resetAlertMessage = "120 FPS Super Smooth setup enabled!"
-                showingResetAlert = true
-            }
-            CLCapsuleButton(title: "Save RAM", icon: "leaf.fill") {
-                s.applyLowRamMode()
-                resetAlertMessage = "Super RAM Saver setup enabled (~800MB)!"
-                showingResetAlert = true
-            }
-            CLCapsuleButton(title: "Ultra Low", icon: "arrow.down.to.line", fill: Color.orange, textColor: .white) {
+        HStack(spacing: 4) {
+            presetButton(title: "Ultra Low", active: currentPresetName(s) == "ULTRA LOW") {
                 s.applyUltraLowMode()
                 resetAlertMessage = "Ultra Low setup enabled — shadows & reflections off, 25% resolution!"
                 showingResetAlert = true
             }
+            presetButton(title: "Save RAM", active: currentPresetName(s) == "SAVE RAM") {
+                s.applyLowRamMode()
+                resetAlertMessage = "Super RAM Saver setup enabled (~800MB)!"
+                showingResetAlert = true
+            }
+            presetButton(title: "120 FPS", active: currentPresetName(s) == "120 FPS") {
+                s.apply120FpsBoost()
+                resetAlertMessage = "120 FPS Super Smooth setup enabled!"
+                showingResetAlert = true
+            }
         }
+    }
+
+    private func presetButton(title: String, active: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 10.5, weight: .bold))
+                .foregroundColor(.white)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 8)
+                .background((active ? muguetPink : Color(hex: "1b1d22")))
+                .clipShape(RoundedRectangle(cornerRadius: 3))
+                .overlay(RoundedRectangle(cornerRadius: 3).stroke(active ? muguetPink : Color.white.opacity(0.10), lineWidth: 1))
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -1368,6 +1418,250 @@ struct CLPresetButtons: View {
 // The 11 packs that ship with the game, lowercased. They are never
 // listed as mods and never offered for removal, here or in Rust.
 private let stockPacks: Set<String> = ["mpbeach", "mpbusiness", "mpbusiness2", "mpchristmas", "mphipster", "mpindependence", "mplts", "mppilot", "mpvalentines", "spupgrade", "verityradio"]
+
+
+// ---- Muguet web-launcher look: palette, live facts, shared cards ----
+// Colors taken from fivem-home-screen.html (:root). Pink/red is the accent.
+private let muguetPink = Color(hex: "f40552")
+private let muguetPink2 = Color(hex: "ff2e63")
+private let muguetPanel = Color(hex: "101216")
+private let muguetPanel2 = Color(hex: "14161b")
+private let muguetPanel3 = Color(hex: "1b1e24")
+private let muguetInset = Color(hex: "1d2026")
+private let muguetMuted = Color(hex: "a9afb8")
+private let muguetMuted2 = Color(hex: "7f868f")
+private let muguetGreen = Color(hex: "3ddc58")
+private let muguetAmber = Color(hex: "ffb020")
+private let muguetRed = Color(hex: "ff4d4d")
+private let muguetGold = Color(hex: "f5c518")
+private let muguetTeal = Color(hex: "2dd4bf")
+
+/// App version/build read from Info.plist at runtime — never hardcoded.
+private var appVersionShort: String {
+    Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"
+}
+private var appBuildNumber: String {
+    Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "—"
+}
+/// "v0.1 · Build 8" style.
+private var appVersionLabel: String { "v\(appVersionShort) · Build \(appBuildNumber)" }
+/// "0.1 (B8)" style used by the web design.
+private var appVersionCompact: String { "\(appVersionShort) (B\(appBuildNumber))" }
+/// Upstream Build 8.9 is a static repo fact: the latest official Muguet release.
+private let upstreamBuild = "8.9"
+
+/// The 11 stock packs, in the web design's order (same set as stockPacks / Rust STOCK_PACKS).
+private let stockPackList: [String] = ["mpbeach", "mpbusiness", "mpbusiness2", "mpchristmas", "mphipster", "mpindependence", "mplts", "mppilot", "mpvalentines", "spupgrade", "verityradio"]
+
+/// Full console command list from the web design (see help in the console).
+private let consoleCommands: [String] = ["car <code>", "spawn <code>", "heal", "kill", "fix", "dv", "tpm", "tp <x> <y> <z>", "coords", "weather", "cheat <CODE>", "fp", "ram", "dlc", "rpf <mod>", "spawninfo <code>", "reload", "lowram", "ultralow", "quit", "clear", "close"]
+
+/// Current preset name from live settings, for the drawer chip and home card.
+private func currentPresetName(_ s: Settings) -> String {
+    if s.ultraLow { return "ULTRA LOW" }
+    if s.fps == 120 { return "120 FPS" }
+    if s.fps == 30 && s.scale == 0.35 { return "SAVE RAM" }
+    return "CUSTOM"
+}
+
+private func dlcPacksDir() -> URL {
+    let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+    let game = docs.appendingPathComponent("game")
+    let normal = game.appendingPathComponent("data/x64/dlcPacks")
+    if FileManager.default.fileExists(atPath: normal.path) { return normal }
+    return game.appendingPathComponent("gamedat/data/x64/dlcPacks")
+}
+
+/// Installed add-on mod folder names, read from disk (stock packs excluded).
+private func installedModNames() -> [String] {
+    let dir = dlcPacksDir()
+    let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+    return names.sorted().filter { name in
+        var isDir: ObjCBool = false
+        let full = dir.appendingPathComponent(name)
+        return !stockPacks.contains(name.lowercased())
+            && FileManager.default.fileExists(atPath: full.path, isDirectory: &isDir) && isDir.boolValue
+    }
+}
+
+/// Size of a mod's dlc.rpf on disk, or "" when it cannot be read.
+private func installedModSize(_ name: String) -> String {
+    let rpf = dlcPacksDir().appendingPathComponent(name).appendingPathComponent("dlc.rpf")
+    if let attrs = try? FileManager.default.attributesOfItem(atPath: rpf.path),
+       let size = attrs[.size] as? NSNumber {
+        return ByteCountFormatter.string(fromByteCount: Int64(size.intValue), countStyle: .file)
+    }
+    return ""
+}
+
+/// Last "[RAM] ..." line from the console tail, or nil when the game has not logged one.
+private func lastRamLine() -> String? {
+    guard let ptr = muguet_console_tail() else { return nil }
+    let text = String(cString: ptr)
+    return text.split(separator: "\n").last(where: { $0.contains("[RAM]") }).map(String.init)
+}
+
+// Dark web-style card: #101216 panel, 1px white-10% border, 4pt radius.
+private func webCard<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+    VStack(alignment: .leading, spacing: 0) { content() }
+        .padding(7)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(muguetPanel)
+        .clipShape(RoundedRectangle(cornerRadius: 4))
+        .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.white.opacity(0.10), lineWidth: 1))
+}
+
+private func webCardTitle(_ title: String) -> some View {
+    Text(title)
+        .font(.system(size: 11.5, weight: .black))
+        .kerning(0.7)
+        .foregroundColor(.white)
+        .padding(.bottom, 4)
+}
+
+private func webKV(_ k: String, _ v: String, mono: Bool = false) -> some View {
+    HStack(alignment: .top, spacing: 6) {
+        Text(k)
+            .font(.system(size: 10, weight: .bold))
+            .foregroundColor(muguetMuted)
+            .frame(width: 86, alignment: .leading)
+        Text(v)
+            .font(.system(size: 10, design: mono ? .monospaced : .default))
+            .foregroundColor(Color(hex: "dde0e3"))
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+    .padding(.vertical, 2)
+}
+
+private func webNote(_ text: String) -> some View {
+    Text(text)
+        .font(.system(size: 10))
+        .lineSpacing(1.5)
+        .foregroundColor(Color(hex: "c9ccd0"))
+        .fixedSize(horizontal: false, vertical: true)
+}
+
+private func webChip(_ text: String, gold: Bool = false) -> some View {
+    Text(text)
+        .font(.system(size: 9, design: .monospaced))
+        .foregroundColor(gold ? muguetGold : Color(hex: "cfd3d8"))
+        .padding(.horizontal, 5)
+        .padding(.vertical, 2)
+        .background(muguetInset)
+        .clipShape(RoundedRectangle(cornerRadius: 2))
+        .overlay(RoundedRectangle(cornerRadius: 2).stroke(gold ? muguetGold.opacity(0.25) : Color.white.opacity(0.10), lineWidth: 1))
+}
+
+/// One feed post, as in THE PROJECT / IN THIS BUILD.
+private func feedPost(avatar: String, name: String, time: String, body: String) -> some View {
+    VStack(alignment: .leading, spacing: 0) {
+        HStack(alignment: .top, spacing: 7) {
+            Text(avatar)
+                .font(.system(size: 12, weight: .black))
+                .foregroundColor(.white)
+                .frame(width: 26, height: 26)
+                .background(Color(hex: "2b2e35"))
+                .clipShape(RoundedRectangle(cornerRadius: 3))
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 4) {
+                    Text(name).font(.system(size: 11, weight: .bold)).foregroundColor(.white)
+                    Text(time).font(.system(size: 10)).foregroundColor(muguetMuted2)
+                }
+                Text(body)
+                    .font(.system(size: 10.5))
+                    .lineSpacing(1.5)
+                    .foregroundColor(Color(hex: "dde0e3"))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 3)
+            }
+        }
+        .padding(.vertical, 5)
+        Divider().background(Color.white.opacity(0.06))
+    }
+}
+
+/// Live RAM tracker line from the console tail ("—" when the game has not logged one yet).
+struct RamLiveLineView: View {
+    @State private var line: String?
+    @State private var tick = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
+    var body: some View {
+        Text(line ?? "—")
+            .font(.system(size: 10))
+            .foregroundColor(muguetMuted)
+            .onReceive(tick) { _ in line = lastRamLine() }
+            .onAppear { line = lastRamLine() }
+    }
+}
+
+/// Console preview for the settings drawer: last lines of the live tail,
+/// auto-scroll toggle, and a command input that sends to muguet_console_command.
+struct ConsolePreviewView: View {
+    @State private var logText = ""
+    @State private var input = ""
+    @State private var autoScroll = true
+    @State private var tick = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Console").font(.system(size: 11, weight: .bold)).foregroundColor(.white)
+                Spacer()
+                Button(autoScroll ? "Auto-scroll: On" : "Auto-scroll: Off") { autoScroll.toggle() }
+                    .font(.system(size: 10)).foregroundColor(muguetMuted)
+                    .buttonStyle(.plain)
+            }
+            ScrollView {
+                Text(logText.isEmpty ? "Console ready — type help for commands." : logText)
+                    .font(.system(size: 9.5, design: .monospaced))
+                    .lineSpacing(2)
+                    .foregroundColor(Color(hex: "9fe8a9"))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(height: 84)
+            .padding(6)
+            .background(Color(hex: "0a0b0d"))
+            .clipShape(RoundedRectangle(cornerRadius: 3))
+            .overlay(RoundedRectangle(cornerRadius: 3).stroke(Color.white.opacity(0.10), lineWidth: 1))
+            HStack(spacing: 6) {
+                TextField("Command — car, dv, tpm, ram, weather, quit…", text: $input)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundColor(.white)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .onSubmit { submit() }
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 8)
+                    .background(RoundedRectangle(cornerRadius: 3).fill(Color(hex: "0a0b0d")))
+                Button("RUN") { submit() }
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(RoundedRectangle(cornerRadius: 3).fill(Color(hex: "1b1d22")))
+                    .buttonStyle(.plain)
+            }
+        }
+        .onReceive(tick) { _ in poll() }
+        .onAppear { poll() }
+    }
+
+    private func poll() {
+        if !autoScroll { return }
+        guard let ptr = muguet_console_tail() else { return }
+        let text = String(cString: ptr)
+        let tail = text.split(separator: "\n", omittingEmptySubsequences: false).suffix(30).joined(separator: "\n")
+        if tail != logText { logText = tail }
+    }
+
+    private func submit() {
+        let cmd = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cmd.isEmpty else { return }
+        input = ""
+        cmd.withCString { muguet_console_command($0) }
+        if !autoScroll { autoScroll = true }
+        poll()
+    }
+}
 
 private struct ModEntry: Identifiable {
     let name: String
@@ -1384,8 +1678,12 @@ private struct ModEntry: Identifiable {
 struct ModNameSheet: View {
     @Binding var name: String
     @Binding var modelName: String
+    @Binding var metaURL: URL?
+    @Binding var metaFileName: String
     var onCancel: () -> Void
     var onInstall: () -> Void
+
+    @State private var pickingMeta = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -1404,6 +1702,23 @@ struct ModNameSheet: View {
                 .foregroundColor(.white)
                 .padding(.horizontal, 12).padding(.vertical, 10)
                 .background(RoundedRectangle(cornerRadius: 9).fill(Color.white.opacity(0.08)))
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("vehicles.meta").font(.system(size: 13, weight: .semibold)).foregroundColor(.white)
+                    Spacer()
+                    if !metaFileName.isEmpty {
+                        Text(metaFileName).font(.system(size: 12)).foregroundColor(.white.opacity(0.55)).lineLimit(1)
+                    }
+                    Button(metaFileName.isEmpty ? "Choose…" : "Change…") { pickingMeta = true }
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(Color(hex: "0B0D12"))
+                        .padding(.horizontal, 12).padding(.vertical, 7)
+                        .background(Capsule().fill(Color.white))
+                        .buttonStyle(.plain)
+                }
+                Text("Optional. Some packs ship a vehicles.meta inside the .rpf that the game cannot read — if the model will not spawn, pick the mod's vehicles.meta here and the launcher merges its models into the game's vehicles.meta.")
+                    .font(.system(size: 12)).foregroundColor(.white.opacity(0.55))
+            }
             HStack(spacing: 10) {
                 Button("Cancel", action: onCancel)
                     .font(.system(size: 15, weight: .semibold))
@@ -1424,18 +1739,32 @@ struct ModNameSheet: View {
         .padding(22)
         .background(Color(hex: "11131B"))
         .preferredColorScheme(.dark)
+        // The meta picker is this sheet's own sheet: it is opened
+        // from a button tap, never in the same turn as a dismissal.
+        .sheet(isPresented: $pickingMeta) {
+            DocumentPicker(isPresented: $pickingMeta, contentTypes: [UTType(tag: "meta", tagClass: .filenameExtension, conformingTo: .data) ?? UTType.data], onPick: { url in
+                metaURL = url
+                metaFileName = url.lastPathComponent
+            }, onError: { _ in })
+        }
     }
 }
 
+// Settings drawer, rebuilt to the web design: a full-screen landscape
+// panel with a pinned header (SETTINGS, version, current-preset chip,
+// close X) and a three-column body that scrolls internally. Every control
+// from the old side panel lives here with the same bindings, actions and
+// alert messages; only the layout changed.
 struct CLSettingsPanel: View {
-    let screenWidth: CGFloat
     @ObservedObject var s: Settings
     @Binding var showingCheatSheet: Bool
     @Binding var showingHUDEditor: Bool
     @Binding var showingResetAlert: Bool
     @Binding var resetAlertMessage: String
     @Binding var newVehicleCode: String
+    @Binding var jumpSection: String?
     var onClose: () -> Void
+    var onLaunch: () -> Void = {}
 
     // Mods manager state. The installed list is read from disk, never
     // stored: the folders under dlcPacks are the truth.
@@ -1444,390 +1773,83 @@ struct CLSettingsPanel: View {
     @State private var modNameSheetURL: URL?
     @State private var modNameText = ""
     @State private var modModelText = ""
+    @State private var modMetaURL: URL?
+    @State private var modMetaFileName = ""
+    @State private var pickingMetaFor: String?
+    @State private var pickingMeta = false
     @State private var modToDelete: String?
     @State private var modsStatus = ""
     @State private var modsWorking = false
+    @State private var verifyStatus = ""
 
     var body: some View {
-        ZStack(alignment: .trailing) {
+        ZStack {
             Color.black.opacity(0.55)
                 .ignoresSafeArea()
                 .onTapGesture { onClose() }
-            VStack(alignment: .leading, spacing: 0) {
-                CLPanelHeader(title: "Settings", onClose: onClose)
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 20) {
-                        CLSection("Character") {
-                            CLDarkField(label: "Character name", text: $s.name, placeholder: "Enter a character name...", autocapitalization: .words)
-                            Text("This name will show above your character's head when you play with friends.")
-                                .font(.system(size: 12)).foregroundColor(.white.opacity(0.5))
+            VStack(spacing: 0) {
+                // Pinned header.
+                HStack(spacing: 10) {
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 18))
+                        .foregroundColor(.white)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("SETTINGS")
+                            .font(.system(size: 15, weight: .black))
+                            .kerning(0.7)
+                            .foregroundColor(.white)
+                        Text("\(appVersionLabel) · iOS 15+")
+                            .font(.system(size: 10.5))
+                            .foregroundColor(muguetMuted)
+                    }
+                    Text(currentPresetName(s))
+                        .font(.system(size: 10, weight: .black))
+                        .kerning(0.5)
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(muguetPink)
+                        .clipShape(RoundedRectangle(cornerRadius: 3))
+                    Spacer()
+                    Button(action: onClose) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundColor(.white.opacity(0.85))
+                            .frame(width: 32, height: 32)
+                            .background(Circle().fill(Color.white.opacity(0.1)))
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(muguetPanel2)
+                Divider().background(Color.white.opacity(0.10))
+                ScrollViewReader { proxy in
+                    ScrollView(.vertical, showsIndicators: false) {
+                        HStack(alignment: .top, spacing: 0) {
+                            settingsColumn1
+                            Divider().background(Color.white.opacity(0.10))
+                            settingsColumn2
+                            Divider().background(Color.white.opacity(0.10))
+                            settingsColumn3
                         }
-
-                        if !s.multiplayer {
-                            CLSection("Mode") {
-                                CLChipPicker(label: "Mode", selection: $s.mode, options: [
-                                    ("Story Mode", 1),
-                                    ("Sandbox (Free Roam)", 2)
-                                ])
-                            }
-                        }
-
-                        CLSection("Graphics Settings & Enable 120 FPS") {
-                            CLPresetButtons(s: s, resetAlertMessage: $resetAlertMessage, showingResetAlert: $showingResetAlert)
-                            CLChipPicker(label: "Frame rate (Frame Limit)", selection: $s.fps, options: [
-                                ("30 fps (Save battery)", 30),
-                                ("60 fps (Default)", 60),
-                                ("120 fps (Unlock 120 FPS / ProMotion)", 120)
-                            ])
-                            CLChipPicker(label: "Resolution", selection: $s.scale, options: [
-                                ("25% (Ultra low)", 0.25),
-                                ("35% (Super light)", 0.35),
-                                ("50% (Recommended for 120 FPS)", 0.5),
-                                ("65% (Balanced)", 0.65),
-                                ("75% (Sharp)", 0.75),
-                                ("100% (Native resolution)", 1.0)
-                            ])
-                            CLChipPicker(label: "Texture Quality", selection: $s.textures, options: [
-                                ("Normal / Low (Uses less RAM)", 0),
-                                ("Cao", 1),
-                                ("Very High", 2)
-                            ])
-                            CLToggle(title: "Lock ProMotion V-Sync 120Hz pacing (CADisplayLink)", isOn: $s.promotionSync)
-                            Text("Syncs precisely with your iPhone/iPad screen's 60Hz/120Hz refresh rate to remove stutter and keep 120 FPS as smooth as possible.")
-                                .font(.system(size: 12)).foregroundColor(.white.opacity(0.5))
-                            CLToggle(title: "Deep graphics optimization (Deep Optimization 60-120 FPS Boost)", isOn: $s.deepOptimization)
-                            Text("Automatically limits shadows, dense grass, and anti-aliasing in GTA V settings.xml to hold max FPS when the device heats up.")
-                                .font(.system(size: 12)).foregroundColor(.white.opacity(0.5))
-                            Button(action: {
-                                resetGraphicsSettings()
-                                s.scale = 0.5
-                                s.textures = 0
-                                s.fps = 120
-                                s.shadowQuality = 1
-                                s.shadowDistance = 1.0
-                                s.reflectionQuality = 1
-                                s.grassQuality = 0
-                                s.waterQuality = 0
-                                s.particleQuality = 0
-                                s.postFx = 0
-                                s.anisotropicFiltering = 0
-                                s.fxaa = true
-                                s.cityDensity = 0.5
-                                s.pedDensity = 0.5
-                                s.distanceScaling = 0.0
-                                s.deepOptimization = true
-                                s.ultraLow = false
-                                s.promotionSync = true
-                                try? s.save()
-                                muguet_reload_settings()
-                                resetAlertMessage = "Restored Rockstar GTA V graphics to safe defaults (Shader High, MSAA Off, Shadows Normal, 120 FPS). The black screen caused by Max Settings is fully fixed!"
-                                showingResetAlert = true
-                            }) {
-                                Label("Restore original graphics (Fix black screen)", systemImage: "arrow.counterclockwise.circle.fill")
-                                    .font(.system(size: 15, weight: .semibold))
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 11)
-                                    .background(Capsule().stroke(Color.red.opacity(0.6), lineWidth: 1))
-                                    .foregroundColor(.red)
-                            }
-                            .buttonStyle(.plain)
-                        }
-
-                        CLSection("Detailed GTA V Graphics Settings (In-Game Graphics)") {
-                            Text("Set GTA V graphics options right here without changing them in-game.")
-                                .font(.system(size: 12)).foregroundColor(.white.opacity(0.5))
-                            CLChipPicker(label: "Shadow Quality", selection: $s.shadowQuality, options: [
-                                ("Off (No shadows)", 0),
-                                ("Normal (Smoothest)", 1),
-                                ("Cao", 2),
-                                ("Very High", 3)
-                            ])
-                            CLChipPicker(label: "Shadow Distance", selection: $s.shadowDistance, options: [
-                                ("Short (0.5× - Save RAM)", 0.5),
-                                ("Standard (1.0×)", 1.0),
-                                ("Xa (1.5×)", 1.5)
-                            ])
-                            CLChipPicker(label: "Reflection Quality", selection: $s.reflectionQuality, options: [
-                                ("Off (No reflections)", 0),
-                                ("Normal", 1),
-                                ("Cao", 2),
-                                ("Very High", 3)
-                            ])
-                            CLChipPicker(label: "Grass & Vegetation Quality", selection: $s.grassQuality, options: [
-                                ("Normal (Prevents FPS drops in hills)", 0),
-                                ("Cao", 1),
-                                ("Very High", 2)
-                            ])
-                            CLChipPicker(label: "Water Quality", selection: $s.waterQuality, options: [
-                                ("Normal", 0),
-                                ("Cao", 1),
-                                ("Very High", 2)
-                            ])
-                            CLChipPicker(label: "Particle & Explosion Effect Quality", selection: $s.particleQuality, options: [
-                                ("Normal", 0),
-                                ("Cao", 1),
-                                ("Very High", 2)
-                            ])
-                            CLChipPicker(label: "Post FX & Lighting", selection: $s.postFx, options: [
-                                ("Normal (Best FPS)", 0),
-                                ("High (Bloom & Sun rays)", 1),
-                                ("Very High", 2)
-                            ])
-                            CLChipPicker(label: "Surface Detail Filtering (Anisotropic Filtering)", selection: $s.anisotropicFiltering, options: [
-                                ("Off (x0)", 0),
-                                ("x4", 4),
-                                ("x8", 8),
-                                ("x16 (Sharp road detail)", 16)
-                            ])
-                            CLToggle(title: "Edge anti-aliasing (FXAA)", isOn: $s.fxaa)
-                            CLChipPicker(label: "Traffic Density", selection: $s.cityDensity, options: [
-                                ("Empty (0% - Smoothest)", 0.0),
-                                ("Medium (50%)", 0.5),
-                                ("Heavy (100% - Like PC)", 1.0)
-                            ])
-                            CLChipPicker(label: "Pedestrian Density & Variety", selection: $s.pedDensity, options: [
-                                ("Low (0% - Save RAM)", 0.0),
-                                ("Medium (50%)", 0.5),
-                                ("Heavy (100%)", 1.0)
-                            ])
-                            CLChipPicker(label: "Draw Distance & Object Detail (LOD Scale)", selection: $s.distanceScaling, options: [
-                                ("Save RAM (-0.5)", -0.5),
-                                ("Standard (0.0)", 0.0),
-                                ("Far view (+0.5)", 0.5)
-                            ])
-                        }
-
-                        CLSection("Controls") {
-                            Button(action: { showingHUDEditor = true }) {
-                                Label("Adjust button position & size visually (HUD Editor)", systemImage: "hand.draw.fill")
-                                    .font(.system(size: 15, weight: .semibold))
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 11)
-                                    .background(Capsule().fill(Color.white))
-                                    .foregroundColor(Color(hex: "0B0D12"))
-                            }
-                            .buttonStyle(.plain)
-                            Button("Reset buttons to default") {
-                                s.resetLayout()
-                            }
-                            .font(.system(size: 14))
-                            .foregroundColor(.orange)
-                            HStack {
-                                Text("Look sensitivity").foregroundColor(.white)
-                                Slider(value: $s.touch, in: 0.25...6.0, step: 0.25).tint(.white)
-                                Text(String(format: "%.2f×", s.touch)).monospacedDigit().frame(width: 55, alignment: .trailing).foregroundColor(.white)
-                            }
-                            HStack {
-                                Text("Gamepad sensitivity").foregroundColor(.white)
-                                Slider(value: $s.padSensitivity, in: 0.25...4.0, step: 0.25).tint(.white)
-                                Text(String(format: "%.2f×", s.padSensitivity)).monospacedDigit().frame(width: 55, alignment: .trailing).foregroundColor(.white)
-                            }
-                            CLChipPicker(label: "Aim button", selection: $s.aimMode, options: [
-                                ("Tap to toggle", "toggle"),
-                                ("Hold to aim", "hold")
-                            ])
-                            CLToggle(title: "Aim while firing", isOn: $s.fireAim)
-                            HStack {
-                                Text("Aim sensitivity").foregroundColor(.white)
-                                Slider(value: $s.aimSensitivity, in: 0.1...3.0, step: 0.1).tint(.white)
-                                Text(String(format: "%.2f×", s.aimSensitivity)).monospacedDigit().frame(width: 55, alignment: .trailing).foregroundColor(.white)
-                            }
-                            Text("Drag on the right FIRE button to adjust aim while shooting. The left FIRE button frees your right thumb to aim.")
-                                .font(.system(size: 12)).foregroundColor(.white.opacity(0.5))
-                            CLToggle(title: "Mute audio", isOn: $s.mute)
-                        }
-
-                        CLSection("Play Online (Multiplayer)") {
-                            CLToggle(title: "Enable Multiplayer mode", isOn: $s.multiplayer)
-                            if s.multiplayer {
-                                CLChipPicker(label: "Room mode", selection: $s.roomMode, options: [
-                                    ("Create room", "create"),
-                                    ("Join room", "join"),
-                                    ("Public", "public"),
-                                    ("LAN Host", "lan")
-                                ])
-                                if s.roomMode == "create" {
-                                    createForm
-                                } else if s.roomMode == "join" {
-                                    joinForm
-                                } else if s.roomMode == "public" {
-                                    publicForm
-                                } else {
-                                    lanForm
-                                }
-                                DisclosureGroup("Server (Advanced)") {
-                                    CLDarkField(label: "Server IP", text: $s.server, placeholder: "18.143.103.253", keyboardType: .numbersAndPunctuation)
-                                    HStack {
-                                        Circle().fill(Color.green).frame(width: 8, height: 8)
-                                        Text("AWS iOSVN Singapore server (Ping ~40ms, Supports 32 / 64 players)")
-                                            .font(.system(size: 12)).foregroundColor(.white.opacity(0.55))
-                                    }
-                                }
-                                .foregroundColor(.white)
-                            }
-                        }
-
-                        if !s.multiplayer {
-                            CLSection("GTA V Cheat Codes (Offline only)") {
-                                Button(action: { showingCheatSheet = true }) {
-                                    Label("View & Activate Cheat Codes", systemImage: "wand.and.stars")
-                                        .font(.system(size: 15, weight: .semibold))
-                                        .frame(maxWidth: .infinity)
-                                        .padding(.vertical, 11)
-                                        .background(Capsule().fill(Color.white))
-                                        .foregroundColor(Color(hex: "0B0D12"))
-                                }
-                                .buttonStyle(.plain)
-                                Text("Quickly look up and activate cheat codes (invincibility, full weapons, helicopter, race cars...). Cheat codes are auto-locked in Online mode.")
-                                    .font(.system(size: 12)).foregroundColor(.white.opacity(0.5))
-                            }
-                        }
-
-                        if !s.multiplayer {
-                            CLSection("Sandbox Vehicles") {
-                                CLToggle(title: "Auto-spawn vehicle in Sandbox", isOn: $s.sandboxAutoSpawn)
-                                    .onChange(of: s.sandboxAutoSpawn) { _ in try? s.save() }
-                                Text("When on, every Sandbox session starts you inside the first vehicle below. Turn it off if the spawn ever causes trouble — the CAR button and the in-game menu still work.")
-                                    .font(.system(size: 12)).foregroundColor(.white.opacity(0.5))
-                                VStack(spacing: 6) {
-                                    ForEach(s.sandboxVehicles, id: \.self) { code in
-                                        HStack {
-                                            Text(code).font(.body.monospaced()).foregroundColor(.white)
-                                            Spacer()
-                                            if code == s.sandboxVehicles.first {
-                                                Text("starter").font(.system(size: 12)).foregroundColor(.white.opacity(0.55))
-                                            }
-                                            Button(action: {
-                                                s.sandboxVehicles.removeAll { $0 == code }
-                                                try? s.save()
-                                            }) {
-                                                Image(systemName: "trash")
-                                                    .font(.system(size: 13))
-                                                    .foregroundColor(.red)
-                                            }
-                                            .buttonStyle(.plain)
-                                        }
-                                        .padding(.horizontal, 12).padding(.vertical, 8)
-                                        .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.05)))
-                                    }
-                                }
-                                HStack {
-                                    TextField("Add a vehicle code (e.g. loweyezv)", text: $newVehicleCode)
-                                        .textInputAutocapitalization(.never)
-                                        .autocorrectionDisabled()
-                                        .foregroundColor(.white)
-                                        .padding(.horizontal, 12).padding(.vertical, 10)
-                                        .background(RoundedRectangle(cornerRadius: 9).fill(Color.white.opacity(0.08)))
-                                    Button("Add") {
-                                        let c = newVehicleCode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                                        guard !c.isEmpty, !s.sandboxVehicles.contains(c) else { return }
-                                        s.sandboxVehicles.append(c)
-                                        newVehicleCode = ""
-                                        try? s.save()
-                                    }
-                                    .font(.system(size: 14, weight: .semibold))
-                                    .foregroundColor(Color(hex: "0B0D12"))
-                                    .padding(.horizontal, 16).padding(.vertical, 10)
-                                    .background(Capsule().fill(Color.white))
-                                    .buttonStyle(.plain)
-                                    .disabled(newVehicleCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                                }
-                            }
-                        }
-
-                        CLSection("Mods") {
-                            Text("Add-on DLC packs (dlc.rpf). Install a mod zip or a bare dlc.rpf and the game will mount it. The game reads the mod list at launch — restart the game after installing or removing a mod.")
-                                .font(.system(size: 12)).foregroundColor(.white.opacity(0.5))
-                            if installedMods.isEmpty {
-                                Text("No add-on mods installed. The 11 built-in packs are not listed here.")
-                                    .font(.system(size: 12)).foregroundColor(.white.opacity(0.5))
-                            } else {
-                                VStack(spacing: 6) {
-                                    ForEach(installedMods) { mod in
-                                        HStack {
-                                            Text(mod.name).font(.body.monospaced()).foregroundColor(.white)
-                                            Spacer()
-                                            if !mod.size.isEmpty {
-                                                Text(mod.size).font(.system(size: 12)).foregroundColor(.white.opacity(0.55))
-                                            }
-                                            Button(action: { modToDelete = mod.name }) {
-                                                Image(systemName: "trash")
-                                                    .font(.system(size: 13))
-                                                    .foregroundColor(.red)
-                                            }
-                                            .buttonStyle(.plain)
-                                        }
-                                        .padding(.horizontal, 12).padding(.vertical, 8)
-                                        .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.05)))
-                                    }
-                                }
-                            }
-                            Button(action: { pickingMod = true }) {
-                                HStack {
-                                    Image(systemName: "plus")
-                                    Text("Add Mod…")
-                                }
-                                .font(.system(size: 14, weight: .semibold))
-                                .foregroundColor(Color(hex: "0B0D12"))
-                                .padding(.horizontal, 16).padding(.vertical, 10)
-                                .background(Capsule().fill(Color.white))
-                            }
-                            .buttonStyle(.plain)
-                            .disabled(modsWorking)
-                            // Bare .rpf name prompt, inline in the Mods
-                            // section — NOT a sheet. Presenting it as a
-                            // sheet blacked the screen on three tries
-                            // (same-turn present, onDismiss, next
-                            // runloop turn): the picker dismissal was
-                            // still settling every time. An inline card
-                            // needs no UIKit presentation at all, so it
-                            // cannot black-screen; it appears as soon as
-                            // installModFile stashes the picked URL.
-                            if let url = modNameSheetURL {
-                                ModNameSheet(name: $modNameText, modelName: $modModelText, onCancel: {
-                                    modNameSheetURL = nil
-                                }, onInstall: {
-                                    let folder = modNameText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                                    let model = modModelText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                                    modNameSheetURL = nil
-                                    runModInstall(url: url, name: folder, modelName: model)
-                                })
-                                .clipShape(RoundedRectangle(cornerRadius: 12))
-                                .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.15), lineWidth: 1))
-                            }
-                            if modsWorking {
-                                ProgressView().tint(.white)
-                            }
-                            if !modsStatus.isEmpty {
-                                Text(modsStatus).font(.system(size: 12)).foregroundColor(.white.opacity(0.6))
-                            }
-                        }
-                        .onAppear { refreshMods() }
-
-                        CLSection("Save Data") {
-                            CLRow(title: "Share / Backup saves") { shareSaves() }
-                            Text("In game: save via Phone > Quick Save, or Pause > Game > Save Game. Saves are stored in Files app > On My iPhone > GTA V > saves.")
-                                .font(.system(size: 12)).foregroundColor(.white.opacity(0.5))
-                        }
-
-                        CLSection("Diagnostics") {
-                            CLRow(title: "Share startup / memory logs") { shareDiagnostics() }
-                            Text("After a crash, reopen GTA V and share the previous log. Logs contain connection addresses and runtime errors, not game files.")
-                                .font(.system(size: 12)).foregroundColor(.white.opacity(0.5))
+                        .padding(.vertical, 8)
+                    }
+                    .onAppear {
+                        if let j = jumpSection { proxy.scrollTo(j, anchor: .top) }
+                    }
+                    .onChange(of: jumpSection) { _ in
+                        if let j = jumpSection {
+                            withAnimation { proxy.scrollTo(j, anchor: .top) }
                         }
                     }
-                    .padding(.horizontal, 22)
-                    .padding(.bottom, 24)
                 }
             }
-            .frame(width: min(screenWidth * 0.92, 600))
-            .frame(maxHeight: .infinity)
-            .background(Color(hex: "11131B").opacity(0.97))
-            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-            .shadow(color: .black.opacity(0.6), radius: 30, x: -10)
-            .padding(.vertical, 10)
-            .padding(.trailing, 10)
-            .transition(.move(edge: .trailing))
+            .background(muguetPanel2)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white.opacity(0.16), lineWidth: 1))
+            .shadow(color: .black.opacity(0.75), radius: 30)
+            .padding(7)
         }
         .environment(\.colorScheme, .dark)
         // No follow-up sheet after the picker: presenting the name
@@ -1844,6 +1866,20 @@ struct CLSettingsPanel: View {
                 message.withCString { muguet_debug_log($0) }
             })
         }
+        // Meta picker for a mod that is already installed (META
+        // button on its row): no follow-up sheet, the pick installs
+        // the .meta straight away.
+        .sheet(isPresented: $pickingMeta) {
+            DocumentPicker(isPresented: $pickingMeta, contentTypes: [UTType(tag: "meta", tagClass: .filenameExtension, conformingTo: .data) ?? UTType.data], onPick: { url in
+                if let mod = pickingMetaFor {
+                    runMetaInstall(mod: mod, url: url)
+                }
+                pickingMetaFor = nil
+            }, onError: { message in
+                modsStatus = "Could not pick a file: \(message)"
+                pickingMetaFor = nil
+            })
+        }
         .alert("Remove mod?", isPresented: Binding(get: { modToDelete != nil }, set: { if !$0 { modToDelete = nil } })) {
             Button("Remove", role: .destructive) {
                 if let name = modToDelete { removeMod(name) }
@@ -1852,9 +1888,536 @@ struct CLSettingsPanel: View {
             Button("Cancel", role: .cancel) { modToDelete = nil }
         } message: {
             if let name = modToDelete {
-                Text("This deletes the \(name) folder and its line in dlcList.xml. Other mods are not touched.")
+                Text("This deletes the \(name) folder and its line in dlcList.xml, and removes its vehicles.meta models from the game's vehicles.meta. Other mods are not touched.")
             }
         }
+    }
+
+    // MARK: - Column 1: Character + Graphics + Save Data
+
+    private var settingsColumn1: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("◆ CHARACTER")
+                    .font(.system(size: 11, weight: .black)).kerning(1.0).foregroundColor(.white)
+                webGroup {
+                    CLDarkField(label: "Character name", text: $s.name, placeholder: "Enter a character name...", autocapitalization: .words)
+                    Text("This name will show above your character's head when you play with friends.")
+                        .font(.system(size: 10)).foregroundColor(muguetMuted)
+                }
+            }
+            .id("character")
+
+            if !s.multiplayer {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("◆ MODE")
+                        .font(.system(size: 11, weight: .black)).kerning(1.0).foregroundColor(.white)
+                    webGroup {
+                        CLChipPicker(label: "Mode", selection: $s.mode, options: [
+                            ("Story Mode", 1),
+                            ("Sandbox (Free Roam)", 2)
+                        ])
+                    }
+                }
+                .id("mode")
+            }
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text("◆ GRAPHICS")
+                    .font(.system(size: 11, weight: .black)).kerning(1.0).foregroundColor(.white)
+                webGroup {
+                    Text("PRESET")
+                        .font(.system(size: 10, weight: .black)).kerning(0.7).foregroundColor(muguetMuted)
+                    CLPresetButtons(s: s, resetAlertMessage: $resetAlertMessage, showingResetAlert: $showingResetAlert)
+                    Text(presetDescription)
+                        .font(.system(size: 10)).foregroundColor(muguetMuted)
+                }
+                webGroup {
+                    CLChipPicker(label: "Frame rate (Frame Limit)", selection: $s.fps, options: [
+                        ("30 fps", 30),
+                        ("60 fps", 60),
+                        ("120 fps", 120)
+                    ])
+                    CLChipPicker(label: "Resolution", selection: $s.scale, options: [
+                        ("25%", 0.25),
+                        ("35%", 0.35),
+                        ("50%", 0.5),
+                        ("65%", 0.65),
+                        ("75%", 0.75),
+                        ("100%", 1.0)
+                    ])
+                    HStack {
+                        Text("Texture Quality").foregroundColor(.white)
+                        Spacer()
+                        Text("\(s.textures)").font(.system(size: 11, weight: .bold)).foregroundColor(.white)
+                    }
+                    .font(.system(size: 11.5))
+                    CLChipPicker(label: "", selection: $s.textures, options: [
+                        ("Normal / Low", 0),
+                        ("High", 1),
+                        ("Very High", 2)
+                    ])
+                    CLToggle(title: "Lock ProMotion V-Sync 120Hz pacing", isOn: $s.promotionSync)
+                    Text("Syncs precisely with your iPhone screen's 60Hz/120Hz refresh rate to remove stutter and keep 120 FPS as smooth as possible.")
+                        .font(.system(size: 10)).foregroundColor(muguetMuted)
+                    CLToggle(title: "Deep graphics optimization", isOn: $s.deepOptimization)
+                    Text("Automatically limits shadows, dense grass, and anti-aliasing in GTA V settings.xml to hold max FPS when the device heats up.")
+                        .font(.system(size: 10)).foregroundColor(muguetMuted)
+                    Button(action: {
+                        s.applyRockstarDefaults()
+                        resetAlertMessage = "Restored Rockstar GTA V graphics to safe defaults (Shader High, MSAA Off, Shadows Normal, 120 FPS). The black screen caused by Max Settings is fully fixed!"
+                        showingResetAlert = true
+                    }) {
+                        Label("Rockstar defaults", systemImage: "arrow.counterclockwise.circle.fill")
+                            .font(.system(size: 11, weight: .semibold))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 8)
+                            .background(Capsule().stroke(Color.red.opacity(0.6), lineWidth: 1))
+                            .foregroundColor(.red)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .id("graphics")
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text("◆ SAVE DATA")
+                    .font(.system(size: 11, weight: .black)).kerning(1.0).foregroundColor(.white)
+                webGroup {
+                    Text("Phone > Quick Save · Files > saves")
+                        .font(.system(size: 10)).foregroundColor(muguetMuted)
+                    Button("Share / Backup saves") { shareSaves() }
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 8)
+                        .buttonStyle(.plain)
+                    Button("Verify game files") {
+                        verifyStatus = muguet_game_ready()
+                            ? "Game files OK — manifest.json · game.wasm present."
+                            : "Game files missing — import game data to play."
+                    }
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 8)
+                    .buttonStyle(.plain)
+                    if !verifyStatus.isEmpty {
+                        Text(verifyStatus).font(.system(size: 10)).foregroundColor(muguetMuted)
+                    }
+                }
+            }
+            .id("savedata")
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .padding(.horizontal, 10)
+    }
+
+    private var presetDescription: String {
+        switch currentPresetName(s) {
+        case "ULTRA LOW":
+            return "Ultra Low — 25% resolution · Texture 0 · Shader 1 · Shadow 0 · Reflection 0 · MSAA 0 · FXAA off · Water 0 · Particle 0 · Grass 0 · PostFX 0 · CityDensity 0 · PedVariety 0 · MaxLodScale 0."
+        case "SAVE RAM":
+            return "Save RAM — 800 MB–1 GB · 30 FPS · 50%."
+        case "120 FPS":
+            return "120 FPS — 120 · 50% · V-Sync · Deep Opt."
+        default:
+            return "Custom — \(s.fps) FPS · \(Int(s.scale * 100))% resolution."
+        }
+    }
+
+    // MARK: - Column 2: Detailed Graphics + Controls
+
+    private var settingsColumn2: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("◆ DETAILED GRAPHICS")
+                    .font(.system(size: 11, weight: .black)).kerning(1.0).foregroundColor(.white)
+                webGroup {
+                    Text("Set GTA V graphics options right here without changing them in-game.")
+                        .font(.system(size: 10)).foregroundColor(muguetMuted)
+                    CLChipPicker(label: "Shadow Quality", selection: $s.shadowQuality, options: [
+                        ("Off", 0),
+                        ("Normal", 1),
+                        ("High", 2),
+                        ("Very High", 3)
+                    ])
+                    CLChipPicker(label: "Shadow Distance", selection: $s.shadowDistance, options: [
+                        ("Short (0.5×)", 0.5),
+                        ("Standard (1.0×)", 1.0),
+                        ("Far (1.5×)", 1.5)
+                    ])
+                    CLChipPicker(label: "Reflection Quality", selection: $s.reflectionQuality, options: [
+                        ("Off", 0),
+                        ("Normal", 1),
+                        ("High", 2),
+                        ("Very High", 3)
+                    ])
+                    CLChipPicker(label: "Grass & Vegetation", selection: $s.grassQuality, options: [
+                        ("Normal", 0),
+                        ("High", 1),
+                        ("Very High", 2)
+                    ])
+                    CLChipPicker(label: "Water Quality", selection: $s.waterQuality, options: [
+                        ("Normal", 0),
+                        ("High", 1),
+                        ("Very High", 2)
+                    ])
+                    CLChipPicker(label: "Particle & Explosion Effects", selection: $s.particleQuality, options: [
+                        ("Normal", 0),
+                        ("High", 1),
+                        ("Very High", 2)
+                    ])
+                    CLChipPicker(label: "Post FX & Lighting", selection: $s.postFx, options: [
+                        ("Normal", 0),
+                        ("High", 1),
+                        ("Very High", 2)
+                    ])
+                    CLChipPicker(label: "Anisotropic Filtering", selection: $s.anisotropicFiltering, options: [
+                        ("Off (x0)", 0),
+                        ("x4", 4),
+                        ("x8", 8),
+                        ("x16", 16)
+                    ])
+                    CLToggle(title: "Edge anti-aliasing (FXAA)", isOn: $s.fxaa)
+                    CLChipPicker(label: "Traffic Density", selection: $s.cityDensity, options: [
+                        ("Empty (0%)", 0.0),
+                        ("Medium (50%)", 0.5),
+                        ("Heavy (100%)", 1.0)
+                    ])
+                    CLChipPicker(label: "Pedestrian Density & Variety", selection: $s.pedDensity, options: [
+                        ("Low (0%)", 0.0),
+                        ("Medium (50%)", 0.5),
+                        ("Heavy (100%)", 1.0)
+                    ])
+                    CLChipPicker(label: "Draw Distance & LOD Scale", selection: $s.distanceScaling, options: [
+                        ("Save RAM (-0.5)", -0.5),
+                        ("Standard (0.0)", 0.0),
+                        ("Far view (+0.5)", 0.5)
+                    ])
+                }
+            }
+            .id("detailed")
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text("◆ CONTROLS")
+                    .font(.system(size: 11, weight: .black)).kerning(1.0).foregroundColor(.white)
+                webGroup {
+                    Button(action: { showingHUDEditor = true }) {
+                        Label("Adjust button position & size visually (HUD Editor)", systemImage: "hand.draw.fill")
+                            .font(.system(size: 11, weight: .semibold))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 8)
+                            .background(Capsule().fill(Color.white))
+                            .foregroundColor(Color(hex: "0B0D12"))
+                    }
+                    .buttonStyle(.plain)
+                    Button("Reset buttons to default") {
+                        s.resetLayout()
+                    }
+                    .font(.system(size: 11))
+                    .foregroundColor(.orange)
+                    HStack {
+                        Text("Look sensitivity").foregroundColor(.white)
+                        Slider(value: $s.touch, in: 0.25...6.0, step: 0.25).tint(.white)
+                        Text(String(format: "%.2f×", s.touch)).monospacedDigit().frame(width: 48, alignment: .trailing).foregroundColor(.white)
+                    }
+                    .font(.system(size: 11.5))
+                    HStack {
+                        Text("Gamepad sensitivity").foregroundColor(.white)
+                        Slider(value: $s.padSensitivity, in: 0.25...4.0, step: 0.25).tint(.white)
+                        Text(String(format: "%.2f×", s.padSensitivity)).monospacedDigit().frame(width: 48, alignment: .trailing).foregroundColor(.white)
+                    }
+                    .font(.system(size: 11.5))
+                    CLChipPicker(label: "Aim button", selection: $s.aimMode, options: [
+                        ("Tap to toggle", "toggle"),
+                        ("Hold to aim", "hold")
+                    ])
+                    CLToggle(title: "Aim while firing", isOn: $s.fireAim)
+                    HStack {
+                        Text("Aim sensitivity").foregroundColor(.white)
+                        Slider(value: $s.aimSensitivity, in: 0.1...3.0, step: 0.1).tint(.white)
+                        Text(String(format: "%.2f×", s.aimSensitivity)).monospacedDigit().frame(width: 48, alignment: .trailing).foregroundColor(.white)
+                    }
+                    .font(.system(size: 11.5))
+                    Text("Drag on the right FIRE button to adjust aim while shooting. The left FIRE button frees your right thumb to aim.")
+                        .font(.system(size: 10)).foregroundColor(muguetMuted)
+                    CLToggle(title: "Mute audio", isOn: $s.mute)
+                }
+            }
+            .id("controls")
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .padding(.horizontal, 10)
+    }
+
+    // MARK: - Column 3: Multiplayer + Cheats + Sandbox + Mods + Diagnostics
+
+    private var settingsColumn3: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("◆ MULTIPLAYER")
+                    .font(.system(size: 11, weight: .black)).kerning(1.0).foregroundColor(.white)
+                webGroup {
+                    CLToggle(title: "Enable Multiplayer", isOn: $s.multiplayer)
+                    if s.multiplayer {
+                        CLChipPicker(label: "Room mode", selection: $s.roomMode, options: [
+                            ("Create", "create"),
+                            ("Join", "join"),
+                            ("Public", "public"),
+                            ("LAN", "lan")
+                        ])
+                        if s.roomMode == "create" {
+                            createForm
+                        } else if s.roomMode == "join" {
+                            joinForm
+                        } else if s.roomMode == "public" {
+                            publicForm
+                        } else {
+                            lanForm
+                        }
+                        DisclosureGroup("Server (Advanced)") {
+                            CLDarkField(label: "Server IP", text: $s.server, placeholder: "18.143.103.253", keyboardType: .numbersAndPunctuation)
+                            HStack {
+                                Circle().fill(Color.green).frame(width: 8, height: 8)
+                                Text("AWS iOSVN Singapore server (Supports 32 / 64 players)")
+                                    .font(.system(size: 10)).foregroundColor(muguetMuted)
+                            }
+                        }
+                        .foregroundColor(.white)
+                        Text("Host sync")
+                            .font(.system(size: 10)).foregroundColor(muguetMuted)
+                    }
+                }
+            }
+            .id("multiplayer")
+
+            if !s.multiplayer {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("◆ CHEATS — OFFLINE ONLY")
+                        .font(.system(size: 11, weight: .black)).kerning(1.0).foregroundColor(.white)
+                    webGroup {
+                        Button(action: { showingCheatSheet = true }) {
+                            Label("View & Activate Cheat Codes", systemImage: "wand.and.stars")
+                                .font(.system(size: 11, weight: .semibold))
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 8)
+                                .background(Capsule().fill(Color.white))
+                                .foregroundColor(Color(hex: "0B0D12"))
+                        }
+                        .buttonStyle(.plain)
+                        Text("Invincibility, full weapons, helicopter, race cars... Cheat codes are auto-locked in Online mode.")
+                            .font(.system(size: 10)).foregroundColor(muguetMuted)
+                    }
+                }
+                .id("cheats")
+            }
+
+            if !s.multiplayer {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("◆ SANDBOX VEHICLES")
+                        .font(.system(size: 11, weight: .black)).kerning(1.0).foregroundColor(.white)
+                    webGroup {
+                        CLToggle(title: "Auto-spawn vehicle in Sandbox", isOn: $s.sandboxAutoSpawn)
+                            .onChange(of: s.sandboxAutoSpawn) { _ in try? s.save() }
+                        Text("When on, every Sandbox session starts you inside the first vehicle below. Turn it off if the spawn ever causes trouble — the CAR button and the in-game menu still work.")
+                            .font(.system(size: 10)).foregroundColor(muguetMuted)
+                        VStack(spacing: 6) {
+                            ForEach(s.sandboxVehicles, id: \.self) { code in
+                                HStack {
+                                    Text(code).font(.body.monospaced()).foregroundColor(.white)
+                                    Spacer()
+                                    if code == s.sandboxVehicles.first {
+                                        Text("starter").font(.system(size: 11)).foregroundColor(muguetMuted)
+                                    }
+                                    Button(action: {
+                                        s.sandboxVehicles.removeAll { $0 == code }
+                                        try? s.save()
+                                    }) {
+                                        Image(systemName: "trash")
+                                            .font(.system(size: 13))
+                                            .foregroundColor(.red)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                                .padding(.horizontal, 12).padding(.vertical, 8)
+                                .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.05)))
+                            }
+                        }
+                        HStack {
+                            TextField("Add a vehicle code (e.g. loweyezv)", text: $newVehicleCode)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 12).padding(.vertical, 10)
+                                .background(RoundedRectangle(cornerRadius: 9).fill(Color.white.opacity(0.08)))
+                            Button("Add") {
+                                let c = newVehicleCode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                                guard !c.isEmpty, !s.sandboxVehicles.contains(c) else { return }
+                                s.sandboxVehicles.append(c)
+                                newVehicleCode = ""
+                                try? s.save()
+                            }
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundColor(Color(hex: "0B0D12"))
+                            .padding(.horizontal, 16).padding(.vertical, 10)
+                            .background(Capsule().fill(Color.white))
+                            .buttonStyle(.plain)
+                            .disabled(newVehicleCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        }
+                        Text("CODES — FIRST = STARTER · CAR · 30s max")
+                            .font(.system(size: 10)).foregroundColor(muguetMuted)
+                    }
+                }
+                .id("sandbox")
+            }
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text("◆ MODS")
+                    .font(.system(size: 11, weight: .black)).kerning(1.0).foregroundColor(.white)
+                webGroup {
+                    Text("Add-on DLC packs (dlc.rpf). Install a mod zip or a bare dlc.rpf and the game will mount it. If the pack's own vehicles.meta cannot be read, pick the mod's vehicles.meta file — the launcher merges its models into the game's vehicles.meta so the vehicle can spawn. The game reads the mod list at launch — restart the game after installing or removing a mod.")
+                        .font(.system(size: 10)).foregroundColor(muguetMuted)
+                    if installedMods.isEmpty {
+                        Text("No add-on mods installed. The 11 built-in packs are not listed here.")
+                            .font(.system(size: 10)).foregroundColor(muguetMuted)
+                    } else {
+                        VStack(spacing: 6) {
+                            ForEach(installedMods) { mod in
+                                HStack {
+                                    Text(mod.name).font(.body.monospaced()).foregroundColor(.white)
+                                    Spacer()
+                                    if !mod.size.isEmpty {
+                                        Text(mod.size).font(.system(size: 11)).foregroundColor(muguetMuted)
+                                    }
+                                    Button(action: {
+                                        pickingMetaFor = mod.name
+                                        pickingMeta = true
+                                    }) {
+                                        Image(systemName: "doc.badge.plus")
+                                            .font(.system(size: 13))
+                                            .foregroundColor(.white.opacity(0.8))
+                                    }
+                                    .buttonStyle(.plain)
+                                    Button(action: { modToDelete = mod.name }) {
+                                        Image(systemName: "trash")
+                                            .font(.system(size: 13))
+                                            .foregroundColor(.red)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                                .padding(.horizontal, 12).padding(.vertical, 8)
+                                .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.05)))
+                            }
+                        }
+                    }
+                    Button(action: { pickingMod = true }) {
+                        HStack {
+                            Image(systemName: "plus")
+                            Text("Add Mod…")
+                        }
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(Color(hex: "0B0D12"))
+                        .padding(.horizontal, 16).padding(.vertical, 10)
+                        .background(Capsule().fill(Color.white))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(modsWorking)
+                    // Bare .rpf name prompt, inline in the Mods
+                    // section — NOT a sheet. Presenting it as a
+                    // sheet blacked the screen on three tries
+                    // (same-turn present, onDismiss, next
+                    // runloop turn): the picker dismissal was
+                    // still settling every time. An inline card
+                    // needs no UIKit presentation at all, so it
+                    // cannot black-screen; it appears as soon as
+                    // installModFile stashes the picked URL.
+                    if let url = modNameSheetURL {
+                        ModNameSheet(name: $modNameText, modelName: $modModelText, metaURL: $modMetaURL, metaFileName: $modMetaFileName, onCancel: {
+                            modNameSheetURL = nil
+                            modMetaURL = nil
+                            modMetaFileName = ""
+                        }, onInstall: {
+                            let folder = modNameText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                            let model = modModelText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                            let meta = modMetaURL
+                            modNameSheetURL = nil
+                            modMetaURL = nil
+                            modMetaFileName = ""
+                            runModInstall(url: url, name: folder, modelName: model, metaURL: meta)
+                        })
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.15), lineWidth: 1))
+                    }
+                    if modsWorking {
+                        ProgressView().tint(.white)
+                    }
+                    if !modsStatus.isEmpty {
+                        Text(modsStatus).font(.system(size: 10)).foregroundColor(muguetMuted)
+                    }
+                    Text("dlc.rpf → dlcPacks/ · Restart · Stock: 11 packs")
+                        .font(.system(size: 10)).foregroundColor(muguetMuted)
+                }
+                .onAppear { refreshMods() }
+            }
+            .id("mods")
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text("◆ DIAGNOSTICS")
+                    .font(.system(size: 11, weight: .black)).kerning(1.0).foregroundColor(.white)
+                webGroup {
+                    HStack {
+                        Text("RAM tracker").foregroundColor(.white)
+                        Spacer()
+                        Text("LIVE").font(.system(size: 9, weight: .black)).foregroundColor(Color(hex: "86efac"))
+                            .padding(.horizontal, 5).padding(.vertical, 2)
+                            .background(Color(hex: "14532d"))
+                            .clipShape(RoundedRectangle(cornerRadius: 2))
+                    }
+                    .font(.system(size: 11.5))
+                    RamLiveLineView()
+                    Text("T1 <768 · T2 <384 · T3 <192 MB · T3 = pause")
+                        .font(.system(size: 10)).foregroundColor(muguetMuted)
+                    Button("Share startup / memory logs") { shareDiagnostics() }
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 8)
+                        .buttonStyle(.plain)
+                    Text("After a crash, reopen GTA V and share the previous log. Logs contain connection addresses and runtime errors, not game files.")
+                        .font(.system(size: 10)).foregroundColor(muguetMuted)
+                    ConsolePreviewView()
+                    Text("car · heal · dv · ram · quit")
+                        .font(.system(size: 10)).foregroundColor(muguetMuted)
+                }
+            }
+            .id("diagnostics")
+
+            Button(action: onLaunch) {
+                HStack(spacing: 6) {
+                    Image(systemName: "play.fill").font(.system(size: 11))
+                    Text("LAUNCH GTA V").font(.system(size: 11, weight: .black)).kerning(0.5)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 10)
+                .background(muguetPink)
+                .foregroundColor(.white)
+                .clipShape(RoundedRectangle(cornerRadius: 3))
+            }
+            .buttonStyle(.plain)
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .padding(.horizontal, 10)
+    }
+
+    // Web drawer group: translucent white fill, 1px border, 4pt radius.
+    private func webGroup<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 7) { content() }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(7)
+            .background(Color.white.opacity(0.045))
+            .clipShape(RoundedRectangle(cornerRadius: 4))
+            .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.white.opacity(0.10), lineWidth: 1))
     }
 
     // Mods manager helpers. The folders under dlcPacks are the source
@@ -1910,7 +2473,31 @@ struct CLSettingsPanel: View {
     // before. The folder name always goes to Rust for the dlcPacks
     // path and the dlcList.xml line; only the sandboxVehicles entry
     // takes the model name.
-    private func runModInstall(url: URL, name: String, modelName: String = "") {
+    // Install a vehicles.meta for an already-installed mod (META
+    // button on its row): the mod does not have to be reinstalled.
+    private func runMetaInstall(mod: String, url: URL) {
+        modsWorking = true
+        modsStatus = "Installing vehicles.meta…"
+        DispatchQueue.global(qos: .userInitiated).async {
+            let ok = mod.withCString { m in
+                url.path.withCString { p in muguet_install_vehicles_meta(m, p) }
+            }
+            let models = muguet_vehicles_meta_models().map { String(cString: $0) } ?? ""
+            let err = muguet_mod_error().map { String(cString: $0) } ?? "vehicles.meta install failed."
+            DispatchQueue.main.async {
+                modsWorking = false
+                if ok {
+                    modsStatus = models.isEmpty
+                        ? "vehicles.meta installed for \(mod). Restart the game to use it."
+                        : "vehicles.meta installed for \(mod): \(models). Restart the game to use it."
+                } else {
+                    modsStatus = "vehicles.meta install failed: \(err)"
+                }
+            }
+        }
+    }
+
+    private func runModInstall(url: URL, name: String, modelName: String = "", metaURL: URL? = nil) {
         modsWorking = true
         modsStatus = "Installing…"
         DispatchQueue.global(qos: .userInitiated).async {
@@ -1919,14 +2506,30 @@ struct CLSettingsPanel: View {
             }
             let installed = muguet_mod_name().map { String(cString: $0) } ?? ""
             let err = muguet_mod_error().map { String(cString: $0) } ?? "Install failed."
+            // A vehicles.meta picked in the name sheet installs right
+            // after the .rpf, in the same background turn, so the
+            // status can report both parts at once.
+            var metaNote = ""
+            if ok, !installed.isEmpty, let metaURL {
+                let metaOk = installed.withCString { m in
+                    metaURL.path.withCString { p in muguet_install_vehicles_meta(m, p) }
+                }
+                let models = muguet_vehicles_meta_models().map { String(cString: $0) } ?? ""
+                if metaOk {
+                    metaNote = models.isEmpty ? " vehicles.meta registered." : " vehicles.meta registered \(models)."
+                } else {
+                    let metaErr = muguet_mod_error().map { String(cString: $0) } ?? "vehicles.meta install failed."
+                    metaNote = " vehicles.meta failed: \(metaErr)"
+                }
+            }
             DispatchQueue.main.async {
                 modsWorking = false
                 if ok, !installed.isEmpty {
                     let vehicleCode = modelName.isEmpty ? installed : modelName
                     if vehicleCode == installed {
-                        modsStatus = "Installed \(installed). Restart the game to use it."
+                        modsStatus = "Installed \(installed).\(metaNote) Restart the game to use it."
                     } else {
-                        modsStatus = "Installed \(installed) — spawn it with \(vehicleCode). Restart the game to use it."
+                        modsStatus = "Installed \(installed) — spawn it with \(vehicleCode).\(metaNote) Restart the game to use it."
                     }
                     if !s.sandboxVehicles.contains(vehicleCode) {
                         s.sandboxVehicles.append(vehicleCode)
@@ -2136,6 +2739,7 @@ struct CLSettingsPanel: View {
     }
 }
 
+
 struct LauncherView: View {
     @StateObject private var s = Settings()
     @ObservedObject private var importer = Importer.shared
@@ -2147,6 +2751,9 @@ struct LauncherView: View {
     @State private var resetAlertMessage = ""
     @State private var newVehicleCode = ""
     @State private var showingSettings = false
+    @State private var settingsSection: String?
+    @State private var showingConsole = false
+    @State private var infoMessage: String?
     var isOverlay: Bool = false
     let play: () -> Void
 
@@ -2178,68 +2785,43 @@ struct LauncherView: View {
         return "\(modeName) · Game data ready"
     }
 
+    private func openSettings(section: String? = nil) {
+        settingsSection = section
+        showingSettings = true
+    }
+
+    private func closeSettings() {
+        // Panel edits only reached disk via Play/Continue
+        // before, so closing the panel silently lost
+        // them. Save here; Play still saves again.
+        try? s.save()
+        settingsSection = nil
+        showingSettings = false
+    }
+
     var body: some View {
         GeometryReader { geo in
-            ZStack(alignment: .topLeading) {
-                if isOverlay {
-                    Color.black.ignoresSafeArea()
-                    // Static dark-green glow across the top, GTA V brand green.
-                    // No TimelineView animation: the launcher stays still and fast.
-                    Circle()
-                        .fill(Color(hex: "1F7A33").opacity(0.30))
-                        .frame(width: 560, height: 400)
-                        .blur(radius: 110)
-                        .offset(x: geo.size.width * 0.5 - 280, y: -190)
-                } else {
-                    // GTA V logo wallpaper, dead-center: the logo is
-                    // centered in the 600x400 image (its bright core was
-                    // at 42% height, shifted to 50%), so plain fill
-                    // centers the logo itself. The explicit geo-sized
-                    // frame centers it on the screen and the 1.2x zoom
-                    // makes the V big without cropping its arms.
-                    Image("BackgroundLosSantos")
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                        .scaleEffect(1.2)
-                        .frame(width: geo.size.width, height: geo.size.height)
-                        .clipped()
-                        .ignoresSafeArea()
-                    // Dark gradient overlay so the white header text, PLAY
-                    // button, mode rail, quick rows and credits stay readable.
-                    LinearGradient(
-                        stops: [
-                            .init(color: Color.black.opacity(0.55), location: 0.0),
-                            .init(color: Color.black.opacity(0.25), location: 0.5),
-                            .init(color: Color.black.opacity(0.75), location: 1.0)
-                        ],
-                        startPoint: .top, endPoint: .bottom)
-                        .ignoresSafeArea()
-                }
-                VStack(alignment: .leading, spacing: 0) {
-                    headerRow
-                    ScrollView(.vertical, showsIndicators: false) {
-                        VStack(alignment: .leading, spacing: 22) {
-                            hero
-                            modeRail
-                            presetChips
-                            quickRows
-                            footer
+            if !isOverlay && geo.size.width < geo.size.height {
+                rotateView
+            } else {
+                ZStack(alignment: .topLeading) {
+                    Color(hex: "070708").ignoresSafeArea()
+                    VStack(spacing: 0) {
+                        topBar
+                        ScrollView(.vertical, showsIndicators: false) {
+                            HStack(alignment: .top, spacing: 5) {
+                                leftColumn(width: (geo.size.width - 15) * 0.465)
+                                middleColumn(width: (geo.size.width - 15) * 0.26)
+                                rightColumn(width: (geo.size.width - 15) * 0.26)
+                            }
+                            .padding(5)
                         }
-                        .padding(.horizontal, 24)
-                        .padding(.top, 8)
-                        .padding(.bottom, 24)
                     }
-                }
-                if showingSettings {
-                    CLSettingsPanel(screenWidth: geo.size.width, s: s, showingCheatSheet: $showingCheatSheet, showingHUDEditor: $showingHUDEditor, showingResetAlert: $showingResetAlert, resetAlertMessage: $resetAlertMessage, newVehicleCode: $newVehicleCode, onClose: {
-                        // Panel edits only reached disk via Play/Continue
-                        // before, so closing the panel silently lost
-                        // them. Save here; Play still saves again.
-                        try? s.save()
-                        showingSettings = false
-                    })
-                        .transition(.opacity)
-                        .zIndex(20)
+                    if showingSettings {
+                        CLSettingsPanel(s: s, showingCheatSheet: $showingCheatSheet, showingHUDEditor: $showingHUDEditor, showingResetAlert: $showingResetAlert, resetAlertMessage: $resetAlertMessage, newVehicleCode: $newVehicleCode, jumpSection: $settingsSection, onClose: closeSettings, onLaunch: { start() })
+                            .transition(.opacity)
+                            .zIndex(20)
+                    }
                 }
             }
         }
@@ -2265,58 +2847,206 @@ struct LauncherView: View {
         .fullScreenCover(isPresented: $showingHUDEditor) {
             HUDEditorView(settings: s)
         }
+        .fullScreenCover(isPresented: $showingConsole) {
+            ConsoleView(onClose: { showingConsole = false })
+        }
         .alert("Graphics Notice", isPresented: $showingResetAlert) {
             Button("OK", role: .cancel) { }
         } message: {
             Text(resetAlertMessage)
         }
+        .alert("Muguet", isPresented: Binding(get: { infoMessage != nil }, set: { if !$0 { infoMessage = nil } })) {
+            Button("OK", role: .cancel) { infoMessage = nil }
+        } message: {
+            if let infoMessage { Text(infoMessage) }
+        }
     }
 
-    private var headerRow: some View {
-        HStack {
-            Text("GTA V")
-                .font(.system(size: 19, weight: .semibold))
-                .foregroundColor(.white)
-            Spacer()
-            Button { showingSettings = true } label: {
-                Image(systemName: "gearshape")
-                    .font(.system(size: 19, weight: .light))
-                    .frame(width: 42, height: 42)
+    // MARK: - Rotate prompt (portrait)
+
+    private var rotateView: some View {
+        ZStack {
+            Color(hex: "060607").ignoresSafeArea()
+            VStack(spacing: 14) {
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(Color.white, lineWidth: 3)
+                    .frame(width: 54, height: 88)
+                Text("ROTATE YOUR iPHONE")
+                    .font(.system(size: 20, weight: .bold))
+                    .kerning(1)
                     .foregroundColor(.white)
+                Text("Landscape only — turn sideways.")
+                    .font(.system(size: 13))
+                    .foregroundColor(Color(hex: "c9ccd0"))
+                Text("λ Muguet · GTA V iOS Port · \(appVersionLabel)")
+                    .font(.system(size: 11))
+                    .foregroundColor(muguetMuted2)
+            }
+        }
+    }
+
+    // MARK: - Top bar
+
+    private var topBar: some View {
+        HStack(spacing: 0) {
+            HStack(spacing: 0) {
+                topNavButton("GITHUB") {
+                    infoMessage = "Source — github.com/pentafcb/muguet-gta"
+                }
+                topNavButton("UPSTREAM") {
+                    infoMessage = "Fork of c22dev/muguet via iOSVNNews/muguet-ios-build"
+                }
+                topNavButton("BUILD 8.9") {
+                    infoMessage = "This fork: \(appVersionLabel) · latest official release: Build \(upstreamBuild)"
+                }
+            }
+            Spacer()
+            VStack(alignment: .trailing, spacing: 1) {
+                Text("IPA ≈70 MB · iOS 15+")
+                    .font(.system(size: 9.5))
+                    .foregroundColor(Color(hex: "cfd3d8"))
+                Text(appVersionLabel)
+                    .font(.system(size: 9.5))
+                    .foregroundColor(Color(hex: "cfd3d8"))
+            }
+            .padding(.trailing, 6)
+            Button(action: {
+                if importer.ready {
+                    infoMessage = "Game data: Ready — manifest.json · game.wasm on disk."
+                } else {
+                    picking = true
+                }
+            }) {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(importer.ready ? muguetGreen : muguetAmber)
+                        .frame(width: 6, height: 6)
+                    Text(importer.ready ? "GAME DATA READY" : "IMPORT GAME DATA")
+                        .font(.system(size: 10.5, weight: .black))
+                        .kerning(0.6)
+                }
+                .foregroundColor(.white)
+                .padding(.horizontal, 10)
+                .frame(height: 27)
+                .background(Color(hex: "0d0e12"))
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+                .overlay(RoundedRectangle(cornerRadius: 4).stroke(muguetPink, lineWidth: 1.5))
+            }
+            .buttonStyle(.plain)
+            .padding(.trailing, 4)
+            Button(action: { showingConsole = true }) {
+                Image(systemName: "keyboard")
+                    .font(.system(size: 15))
+                    .foregroundColor(.white)
+                    .frame(width: 32, height: 32)
+            }
+            .buttonStyle(.plain)
+            Button(action: { openSettings() }) {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 15))
+                    .foregroundColor(.white)
+                    .frame(width: 32, height: 32)
+            }
+            .buttonStyle(.plain)
+            Button(action: { infoMessage = "Close is disabled in the launcher." }) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundColor(.white)
+                    .frame(width: 32, height: 32)
             }
             .buttonStyle(.plain)
         }
-        .padding(.horizontal, 24)
-        .padding(.top, 10)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(Color(hex: "0d0e12"))
+        .overlay(Rectangle().fill(Color.white.opacity(0.07)).frame(height: 1), alignment: .bottom)
     }
 
-    private var hero: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ZStack {
-                LinearGradient(colors: [Color(hex: "1F7A33"), Color(hex: "0B1E12")],
-                               startPoint: .topLeading, endPoint: .bottomTrailing)
-                // Large light "V" behind the image, so the tile still looks
-                // right if the hero icon asset does not resolve.
-                Text("V")
-                    .font(.system(size: 64, weight: .light))
-                    .foregroundColor(.white.opacity(0.85))
-                Image("HeroIcon")
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
+    private func topNavButton(_ title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 10.5, weight: .bold))
+                .kerning(0.7)
+                .foregroundColor(Color(hex: "e8e9eb"))
+                .padding(.horizontal, 8)
+                .frame(height: 30)
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: - Left column
+
+    private func leftColumn(width: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            playCard
+            modeStrip
+            midRow
+            bottomRow
+            presetsCard
+            consoleCard
+            footer
+        }
+        .frame(width: width, alignment: .topLeading)
+    }
+
+    private var playCard: some View {
+        webCard {
+            HStack(spacing: 8) {
+                Text("λ")
+                    .font(.system(size: 26, weight: .black))
+                    .foregroundColor(muguetPink2)
+                Text("PLAY")
+                    .font(.system(size: 23, weight: .black))
+                    .foregroundColor(.white)
+                Spacer()
+                Text("\(s.fps) fps")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundColor(.white.opacity(0.9))
             }
-            .frame(width: 110, height: 110)
-            .clipShape(RoundedRectangle(cornerRadius: 18))
-            .shadow(color: .black.opacity(0.45), radius: 12, y: 5)
-            Text(isOverlay ? "GTA V Menu" : "GTA V")
-                .font(.system(size: 36, weight: .light))
-                .foregroundColor(.white)
-                .padding(.top, 12)
-            Text(statusLine)
-                .font(.system(size: 16))
-                .foregroundColor(.white.opacity(0.62))
-                .padding(.top, 2)
+            Text("GTA V · iOS · c22dev · game.zip · manifest.json · game.wasm · shaders")
+                .font(.system(size: 10.5))
+                .lineSpacing(1.5)
+                .foregroundColor(Color(hex: "d6d8db"))
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.vertical, 4)
+            Button(action: {
+                if importer.ready { start() } else { picking = true }
+            }) {
+                HStack(spacing: 8) {
+                    Image(systemName: "gamecontroller.fill")
+                        .font(.system(size: 11))
+                        .foregroundColor(.white)
+                        .frame(width: 22, height: 22)
+                        .background(LinearGradient(colors: [Color(hex: "f7b731"), Color(hex: "7ac74f")], startPoint: .topLeading, endPoint: .bottomTrailing))
+                        .clipShape(RoundedRectangle(cornerRadius: 2))
+                    Text("GTA V files")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.white)
+                    Spacer()
+                    Text(importer.ready ? "READY" : "IMPORT")
+                        .font(.system(size: 10.5))
+                        .foregroundColor(muguetMuted)
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(muguetInset)
+                .clipShape(RoundedRectangle(cornerRadius: 3))
+            }
+            .buttonStyle(.plain)
+            HStack(spacing: 5) {
+                Circle().fill(muguetGreen).frame(width: 6, height: 6)
+                Text("\(statusLine) · \(appVersionCompact) · 70 MB · iOS 15+ · \(Int(s.scale * 100))% · \(s.fps) fps · mode \(s.mode)")
+                    .font(.system(size: 10))
+                    .foregroundColor(muguetMuted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.top, 4)
+            if let error {
+                Text(error).foregroundStyle(.red).font(.system(size: 11)).fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 4)
+            }
             actionArea
-                .padding(.top, 14)
+                .padding(.top, 6)
         }
     }
 
@@ -2332,124 +3062,32 @@ struct LauncherView: View {
                     Image(systemName: "play.fill").font(.system(size: 13))
                     Text("Continue").font(.system(size: 17, weight: .semibold))
                 }
-                .padding(.horizontal, 34).padding(.vertical, 13)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 11)
                 .background(Capsule().fill(Color.white))
                 .foregroundColor(Color(hex: "0B0D12"))
-                .shadow(color: .black.opacity(0.45), radius: 12, y: 5)
             }
             .buttonStyle(.plain)
             Button(action: { suspendApp() }) {
                 Text("Quit the app")
                     .font(.system(size: 15, weight: .semibold))
-                    .padding(.horizontal, 26).padding(.vertical, 11)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
                     .background(Capsule().stroke(Color.red.opacity(0.6), lineWidth: 1))
                     .foregroundColor(.red)
             }
             .buttonStyle(.plain)
         } else {
-            if let error { Text(error).foregroundStyle(.red).font(.callout).multilineTextAlignment(.center) }
             playButton
             Button("Import other game data…") { picking = true }
                 .font(.caption)
                 .foregroundColor(.white.opacity(0.6))
+                .buttonStyle(.plain)
         }
-    }
-
-    // Centered, no scroll: three tiles fit, and the rail sits in the
-    // middle of the screen instead of hugging the left edge.
-    private var modeRail: some View {
-        HStack(alignment: .bottom, spacing: 16) {
-            modeTile(title: "Story", subtitle: "Story Mode", icon: "gamecontroller", image: "TileStory", index: 0)
-            modeTile(title: "Sandbox", subtitle: "Sandbox · Free Roam", icon: "map", image: "TileSandbox", index: 1)
-            modeTile(title: "Online", subtitle: "Online · Multiplayer", icon: "globe", image: "TileOnline", index: 2)
-        }
-        .frame(maxWidth: .infinity, alignment: .center)
-    }
-
-    private func modeTile(title: String, subtitle: String, icon: String, image: String, index: Int) -> some View {
-        let focused = selectedMode == index
-        let size: CGFloat = focused ? 172 : 140
-        return Button { selectMode(index) } label: {
-            ZStack {
-                // GTA artwork photo, full-bleed in the tile.
-                Image(image)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-                    .frame(width: size, height: size)
-                // Bottom dark gradient so the icon, name and subtitle
-                // stay readable over the photo.
-                LinearGradient(colors: [Color.black.opacity(0.0), Color.black.opacity(0.72)],
-                               startPoint: .top, endPoint: .bottom)
-                VStack(spacing: 8) {
-                    Image(systemName: icon)
-                        .font(.system(size: 36, weight: .light))
-                    Text(title)
-                        .font(.system(size: 13, weight: .medium))
-                }
-                .foregroundColor(.white.opacity(0.9))
-                // Subtitle strip, only on the focused tile.
-                if focused {
-                    VStack {
-                        Spacer()
-                        Text(subtitle)
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundColor(.white)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 9)
-                            .padding(.bottom, 6)
-                    }
-                }
-            }
-            .frame(width: size, height: size)
-            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .stroke(focused ? Color.white : .clear, lineWidth: 3)
-                    .padding(2)
-            )
-            .shadow(color: .black.opacity(focused ? 0.6 : 0.42), radius: focused ? 16 : 7, y: 4)
-        }
-        .buttonStyle(.plain)
-        .animation(.spring(response: 0.4, dampingFraction: 0.85), value: focused)
-    }
-
-    private var presetChips: some View {
-        CLPresetButtons(s: s, resetAlertMessage: $resetAlertMessage, showingResetAlert: $showingResetAlert)
-    }
-
-    private var quickRows: some View {
-        VStack(spacing: 6) {
-            HStack(spacing: 12) {
-                Text("Game data").font(.system(size: 15, weight: .medium)).foregroundColor(.white)
-                Spacer()
-                if importer.ready {
-                    Text("Ready").font(.system(size: 14)).foregroundColor(Color(hex: "7EE787"))
-                } else {
-                    Button("Import") { picking = true }
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundColor(Color(hex: "0B0D12"))
-                        .padding(.horizontal, 16).padding(.vertical, 8)
-                        .background(Capsule().fill(Color.white))
-                        .buttonStyle(.plain)
-                }
-            }
-            .padding(.horizontal, 12).padding(.vertical, 10)
-            .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.05)))
-            CLRow(title: "Player", value: s.name) { showingSettings = true }
-            CLRow(title: "Diagnostics", value: "Share logs") { shareDiagnostics() }
-        }
-    }
-
-    private var footer: some View {
-        VStack(spacing: 2) {
-            Text("proudly made by c22dev").font(.system(size: 12)).foregroundColor(.white.opacity(0.55))
-            Text("Rebuild: Pentacampeon").font(.system(size: 12)).foregroundColor(.white.opacity(0.55))
-        }
-        .frame(maxWidth: .infinity)
     }
 
     @ViewBuilder var importView: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 10) {
             if let p = importer.progress {
                 ProgressView(value: p)
                 Text("Importing… \(Int(p * 100)) %").font(.callout).monospacedDigit()
@@ -2459,14 +3097,14 @@ struct LauncherView: View {
                     .buttonStyle(.borderedProminent)
 
                 VStack(alignment: .leading, spacing: 5) {
-                    Text("💡 Quick install guide using the Files app:")
+                    Text("Quick install guide using the Files app:")
                         .font(.caption.bold())
                         .foregroundStyle(.orange)
                     Text("1. Unzip the zip file with the data on your computer or in the Files app.\n2. Open the Files app > On My iPhone/iPad > GTA V.\n3. Create a folder named 'game' (lowercase).\n4. Paste the 2 folders 'data' and 'b' inside the 'game' folder.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     Divider().padding(.vertical, 2)
-                    Text("📦 Storage note: The full game takes ~21 GB. If you unzip directly on iPhone/iPad you need at least 42 GB free (21 GB zip + 21 GB unzipped; after finishing, delete the zip and it goes back to 21 GB). Unzipping on your computer first and copying it over only uses 21 GB on the device.")
+                    Text("Storage note: The full game takes ~21 GB. If you unzip directly on iPhone/iPad you need at least 42 GB free (21 GB zip + 21 GB unzipped; after finishing, delete the zip and it goes back to 21 GB). Unzipping on your computer first and copying it over only uses 21 GB on the device.")
                         .font(.caption2)
                         .foregroundStyle(.yellow)
                 }
@@ -2479,6 +3117,324 @@ struct LauncherView: View {
         .onAppear(perform: checkStartupError)
     }
 
+    @ViewBuilder var playButton: some View {
+        Button(action: start) {
+            HStack(spacing: 10) {
+                Image(systemName: "play.fill").font(.system(size: 13))
+                Text("Play").font(.system(size: 17, weight: .semibold))
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 11)
+            .background(Capsule().fill(muguetPink))
+            .foregroundColor(.white)
+            .shadow(color: .black.opacity(0.45), radius: 12, y: 5)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var modeStrip: some View {
+        HStack(spacing: 5) {
+            modeButton(title: "Story", sub: "Campaign", index: 0)
+            modeButton(title: "Sandbox", sub: "Free roam", index: 1)
+            modeButton(title: "Online", sub: "Public · LAN", index: 2)
+        }
+    }
+
+    private func modeButton(title: String, sub: String, index: Int) -> some View {
+        let focused = selectedMode == index
+        return Button { selectMode(index) } label: {
+            VStack(alignment: .leading, spacing: 1) {
+                Text("▷ \(title)")
+                    .font(.system(size: 10.5, weight: .bold))
+                    .foregroundColor(.white)
+                Text(sub)
+                    .font(.system(size: 9.5))
+                    .foregroundColor(muguetMuted)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 5)
+            .background(focused ? muguetPink.opacity(0.25) : muguetPanel3)
+            .clipShape(RoundedRectangle(cornerRadius: 3))
+            .overlay(RoundedRectangle(cornerRadius: 3).stroke(focused ? muguetPink : Color.white.opacity(0.10), lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var midRow: some View {
+        HStack(spacing: 5) {
+            Button { selectMode(0) } label: {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("▷ STORY")
+                        .font(.system(size: 14, weight: .black))
+                        .foregroundColor(.white)
+                    Text("Phone > Quick Save")
+                        .font(.system(size: 10.5))
+                        .foregroundColor(Color(hex: "c9ccd0"))
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(7)
+                .background(muguetPanel)
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+                .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.white.opacity(0.10), lineWidth: 1))
+            }
+            .buttonStyle(.plain)
+            Button { openSettings(section: "sandbox") } label: {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("▷ SANDBOX VEHICLES")
+                        .font(.system(size: 14, weight: .black))
+                        .foregroundColor(.white)
+                    Text("First code = starter · CAR = spawn")
+                        .font(.system(size: 10.5))
+                        .foregroundColor(Color(hex: "c9ccd0"))
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(7)
+                .background(muguetPanel)
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+                .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.white.opacity(0.10), lineWidth: 1))
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private var bottomRow: some View {
+        HStack(spacing: 5) {
+            bottomCard(title: "MULTIPLAYER", sub: "\(s.server) · \(s.maxPlayers) max") { openSettings(section: "multiplayer") }
+            bottomCard(title: "MODS & DLC", sub: "\(installedModNames().count) mods · 11 packs") { openSettings(section: "mods") }
+            bottomCard(title: "PRESETS", sub: "120 FPS · Save RAM · Ultra Low") { openSettings(section: "graphics") }
+            bottomCard(title: "ABOUT MUGUET", sub: "muguet-gta · B\(upstreamBuild)") {
+                infoMessage = "Muguet \(appVersionLabel) · by c22dev · latest official release Build \(upstreamBuild) · iOS 15+"
+            }
+        }
+    }
+
+    private func bottomCard(title: String, sub: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.system(size: 10.5, weight: .black))
+                    .kerning(0.3)
+                    .foregroundColor(.white)
+                Text(sub)
+                    .font(.system(size: 10))
+                    .foregroundColor(Color(hex: "c9ccd0"))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(6)
+            .background(muguetPanel)
+            .clipShape(RoundedRectangle(cornerRadius: 4))
+            .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.white.opacity(0.10), lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var presetsCard: some View {
+        webCard {
+            webCardTitle("PRESETS")
+            presetInfoRow(title: "120 FPS", desc: "120 fps · 50% · V-Sync · Deep Opt") {
+                s.apply120FpsBoost()
+                resetAlertMessage = "120 FPS Super Smooth setup enabled!"
+                showingResetAlert = true
+            }
+            presetInfoRow(title: "Save RAM", desc: "800 MB–1 GB") {
+                s.applyLowRamMode()
+                resetAlertMessage = "Super RAM Saver setup enabled (~800MB)!"
+                showingResetAlert = true
+            }
+            presetInfoRow(title: "Ultra Low", desc: "25% · Tex 0 · Shader 1 · rest 0") {
+                s.applyUltraLowMode()
+                resetAlertMessage = "Ultra Low setup enabled — shadows & reflections off, 25% resolution!"
+                showingResetAlert = true
+            }
+            presetInfoRow(title: "Rockstar", desc: "Shader High · MSAA Off · 120 FPS") {
+                s.applyRockstarDefaults()
+                resetAlertMessage = "Restored Rockstar GTA V graphics to safe defaults (Shader High, MSAA Off, Shadows Normal, 120 FPS). The black screen caused by Max Settings is fully fixed!"
+                showingResetAlert = true
+            }
+        }
+    }
+
+    private func presetInfoRow(title: String, desc: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 1) {
+                HStack {
+                    Text(title)
+                        .font(.system(size: 10.5, weight: .black))
+                        .foregroundColor(.white)
+                    if currentPresetName(s) == title.uppercased() {
+                        Text("ACTIVE")
+                            .font(.system(size: 8, weight: .black))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(muguetPink)
+                            .clipShape(RoundedRectangle(cornerRadius: 2))
+                    }
+                    Spacer()
+                }
+                Text(desc)
+                    .font(.system(size: 10))
+                    .foregroundColor(Color(hex: "c9ccd0"))
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 2)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var consoleCard: some View {
+        webCard {
+            webCardTitle("CONSOLE")
+            Button(action: { showingConsole = true }) {
+                VStack(alignment: .leading, spacing: 4) {
+                    FlowChips(items: consoleCommands)
+                    webNote("weather: SUNNY · CLEAR · RAIN · SNOW · XMAS +9")
+                    webNote("Scroll off = frozen")
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private var footer: some View {
+        VStack(spacing: 2) {
+            Text("proudly made by c22dev").font(.system(size: 12)).foregroundColor(.white.opacity(0.55))
+            Text("Rebuild: Pentacampeon").font(.system(size: 12)).foregroundColor(.white.opacity(0.55))
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.top, 2)
+    }
+
+    // MARK: - Middle column: The Project
+
+    private func middleColumn(width: CGFloat) -> some View {
+        let mods = installedModNames()
+        return VStack(alignment: .leading, spacing: 5) {
+            webCard {
+                Text("THE PROJECT")
+                    .font(.system(size: 12.5, weight: .black))
+                    .kerning(0.7)
+                    .foregroundColor(Color(hex: "dfe2e6"))
+                    .padding(.bottom, 2)
+                feedPost(avatar: "λ", name: "pentafcb / muguet-gta", time: "this build",
+                         body: "\(appVersionCompact) · 70 MB · iOS 15+")
+                feedPost(avatar: "c", name: "c22dev / muguet", time: "upstream",
+                         body: "c22dev · iOSVNNews · B\(upstreamBuild)")
+                feedPost(avatar: "λ", name: "Build", time: "CI",
+                         body: "Rust 1.98.1 · aarch64")
+                feedPost(avatar: "▣", name: "Game data", time: "on this iPhone",
+                         body: importer.ready
+                            ? "Ready · \(Int(s.scale * 100))% · \(s.fps) fps · mode \(s.mode)"
+                            : "Not imported yet")
+            }
+            webCard {
+                webCardTitle("MULTIPLAYER")
+                webKV("Server IP", s.server, mono: true)
+                webKV("Host", "AWS · SG")
+                webKV("Ping", "—")
+                webKV("Players", "Max \(s.maxPlayers)")
+                webKV("Rooms", "Create · Join · Public · LAN")
+                webNote("Host sync · Cheats offline")
+                    .padding(.top, 3)
+            }
+            .onTapGesture { openSettings(section: "multiplayer") }
+            webCard {
+                webCardTitle("MODS & STOCK DLC")
+                webNote("dlc.rpf → dlcPacks/ · Restart")
+                if mods.isEmpty {
+                    webNote("No add-on mods installed.")
+                } else {
+                    ForEach(mods, id: \.self) { name in
+                        HStack(spacing: 5) {
+                            Text(name).font(.system(size: 10, weight: .bold)).foregroundColor(.white)
+                            Text(installedModSize(name)).font(.system(size: 10)).foregroundColor(muguetMuted)
+                        }
+                    }
+                }
+                Text("Stock (11):")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundColor(.white)
+                    .padding(.top, 3)
+                FlowChips(items: stockPackList, gold: true)
+            }
+            .onTapGesture { openSettings(section: "mods") }
+        }
+        .frame(width: width, alignment: .topLeading)
+    }
+
+    // MARK: - Right column: In This Build
+
+    private func rightColumn(width: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            webCard {
+                Text("IN THIS BUILD")
+                    .font(.system(size: 12.5, weight: .black))
+                    .kerning(0.7)
+                    .foregroundColor(Color(hex: "dfe2e6"))
+                    .padding(.bottom, 2)
+                feedPost(avatar: "λ", name: "RAM tracker", time: "Build 8",
+                         body: "<768 · <384 · <192 MB")
+                feedPost(avatar: "λ", name: "In-game console", time: "Build 8",
+                         body: "car · heal · dv · ram · quit +16")
+                feedPost(avatar: "λ", name: "Presets", time: "launcher",
+                         body: "120 FPS · Save RAM · Ultra Low")
+                feedPost(avatar: "λ", name: "Mods", time: "Build 8",
+                         body: installedModNames().isEmpty ? "No mods installed" : installedModNames().joined(separator: " · "))
+                feedPost(avatar: "λ", name: "Patcher & spawn", time: "Build 8",
+                         body: "[patch] off · spawninfo ✓")
+            }
+            webCard {
+                webCardTitle("RAM")
+                RamLiveLineView()
+                VStack(alignment: .leading, spacing: 2) {
+                    ramTierRow("T0", "OK", color: muguetGreen)
+                    ramTierRow("T1", "< 768 MB", color: muguetAmber)
+                    ramTierRow("T2", "< 384 MB · 30 FPS", color: muguetRed)
+                    ramTierRow("T3", "< 192 MB · pause", color: muguetRed)
+                }
+                .padding(.top, 2)
+                webNote("Fallback: 2.0 / 2.3 / 2.55 GB")
+                    .padding(.top, 3)
+            }
+            webCard {
+                webCardTitle("BUILD · SAVES · DIAGNOSTICS")
+                webKV("Version", "\(appVersionCompact) · B\(upstreamBuild)")
+                webKV("Creator", "c22dev")
+                webKV("Needs", "game.zip · game.wasm · iOS 15+")
+                webKV("Built with", "Rust 1.98.1")
+                webKV("Entitlements", "mem-limit · virt-addr")
+                webKV("Save", "Files > GTA V > saves")
+                Button(action: { shareDiagnostics() }) {
+                    HStack(alignment: .top, spacing: 6) {
+                        Text("Diagnostics")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(muguetMuted)
+                            .frame(width: 86, alignment: .leading)
+                        Text("Logs · previous log")
+                            .font(.system(size: 10))
+                            .foregroundColor(Color(hex: "dde0e3"))
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 2)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .frame(width: width, alignment: .topLeading)
+    }
+
+    private func ramTierRow(_ tier: String, _ desc: String, color: Color) -> some View {
+        HStack(spacing: 5) {
+            Text(tier).font(.system(size: 10, weight: .bold)).foregroundColor(color)
+            Text(desc).font(.system(size: 10)).foregroundColor(Color(hex: "c9ccd0"))
+        }
+    }
+
+    // MARK: - Startup / launch
+
     // The Rust engine writes Documents/muguet-startup-error.txt when
     // config fails before the game window exists (main.rs); the app
     // then exits, so surface it here on the next launch instead of
@@ -2489,20 +3445,6 @@ struct LauncherView: View {
         guard let text = try? String(contentsOf: url, encoding: .utf8), !text.isEmpty else { return }
         error = text
         try? FileManager.default.removeItem(at: url)
-    }
-
-    @ViewBuilder var playButton: some View {
-        Button(action: start) {
-            HStack(spacing: 10) {
-                Image(systemName: "play.fill").font(.system(size: 13))
-                Text("Play").font(.system(size: 17, weight: .semibold))
-            }
-            .padding(.horizontal, 34).padding(.vertical, 13)
-            .background(Capsule().fill(Color.white))
-            .foregroundColor(Color(hex: "0B0D12"))
-            .shadow(color: .black.opacity(0.45), radius: 12, y: 5)
-        }
-        .buttonStyle(.plain)
     }
 
     func resumeAndSave() {
@@ -2531,6 +3473,41 @@ struct LauncherView: View {
         do { try s.save() } catch { self.error = "Could not save settings: \(error.localizedDescription)"; return }
         s.applyCustomLayout()
         play()
+    }
+}
+
+// Wrapping chip flow for the console command list / stock packs.
+private struct FlowChips: View {
+    let items: [String]
+    var gold: Bool = false
+    var body: some View {
+        // Simple left-aligned wrapping layout via flexible rows.
+        VStack(alignment: .leading, spacing: 3) {
+            ForEach(chipRows(), id: \.self) { row in
+                HStack(spacing: 3) {
+                    ForEach(row, id: \.self) { item in
+                        webChip(item, gold: gold)
+                    }
+                }
+            }
+        }
+    }
+
+    // Greedy wrap on an estimated character width (chips are ~9pt mono).
+    private func chipRows() -> [[String]] {
+        var rows: [[String]] = [[]]
+        var width = 0
+        for item in items {
+            // ~6pt per char + 12pt padding, budget ~230pt per row.
+            let w = item.count * 6 + 14
+            if width + w > 230 && !rows[rows.count - 1].isEmpty {
+                rows.append([])
+                width = 0
+            }
+            rows[rows.count - 1].append(item)
+            width += w
+        }
+        return rows
     }
 }
 
