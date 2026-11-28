@@ -2550,6 +2550,9 @@ fn poll_console_actions(c: &mut Cmd) {
                 c.i("SetWeatherTypeNowPersist", &[c.ptr(S_NAME)]);
                 crate::debug::console_line(&format!("weather: {name}"));
             }
+            // SpawnInfo is handled above (it needs no ped); this arm
+            // only exists so the match stays exhaustive.
+            ConsoleAction::SpawnInfo(_) => {}
         }
     }
 }
@@ -2599,7 +2602,7 @@ fn run_spawn_info(c: &mut Cmd, code: &str) {
     }
     if !report.model_names.is_empty() && !report.model_names.iter().any(|m| m.eq_ignore_ascii_case(code)) {
         crate::debug::console_line(&format!("[spawninfo] the rpf names this model '{}', not '{code}' — spawn with: car {}", report.model_names[0], report.model_names[0]));
-    } else if in_cd == Some(false) {
+    } else if in_cd == Some(0) {
         if report.parse_error.is_some() || report.encrypted_toc {
             crate::debug::console_line("[spawninfo] the model is not in the game files and the pack could not be fully read — see the [rpf] lines above");
         } else if !report.setup2 || !report.content || report.vehicles_meta.is_none() || !report.meta_in_data_files || report.meta_enabled_by.is_empty() {
@@ -2607,9 +2610,9 @@ fn run_spawn_info(c: &mut Cmd, code: &str) {
         } else {
             crate::debug::console_line("[spawninfo] the pack looks complete but the model is not in the game files — the DLC is not mounting inside the game");
         }
-    } else if in_cd == Some(true) && loaded != Some(true) {
+    } else if in_cd == Some(1) && loaded != Some(1) {
         crate::debug::console_line(&format!("[spawninfo] model is registered but not loaded yet — run: car {code}"));
-    } else if loaded == Some(true) {
+    } else if loaded == Some(1) {
         crate::debug::console_line(&format!("[spawninfo] model is loaded — car {code} should work; if it does not, send the console tail"));
     } else {
         crate::debug::console_line("[spawninfo] validation natives not available — fall back to the 30 s wait test (car <code>)");
