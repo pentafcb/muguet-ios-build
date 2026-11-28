@@ -55,6 +55,7 @@ final class Settings: ObservableObject {
     @Published var pedDensity = 0.5 // 0.0: Low, 0.5: Medium, 1.0: High
     @Published var noTraffic = false // built-in mod: no traffic cars, no peds, no parked cars (single-player)
     @Published var sky = "off" // built-in mod: FiveM PvP sky pack (pink/black/cyan/purple), default off
+    @Published var stretch = "off" // built-in option: stretched resolution (4:3 / 5:4), default off
     @Published var distanceScaling = 0.0 // -0.5: Potato, 0.0: Normal, 0.5: Extended
 
     @Published var buttonScale = 1.0
@@ -223,6 +224,7 @@ final class Settings: ObservableObject {
         if let v = json["ped_density"] as? Double { pedDensity = max(0.0, min(1.0, v)) }
         if let v = json["no_traffic"] as? Bool { noTraffic = v }
         if let v = json["sky"] as? String, ["off", "pink", "black", "cyan", "purple"].contains(v) { sky = v }
+        if let v = json["stretch"] as? String, ["off", "4:3", "5:4"].contains(v) { stretch = v }
         if let v = json["distance_scaling"] as? Double { distanceScaling = max(-0.5, min(1.0, v)) }
         if let v = json["button_scale"] as? Double { buttonScale = max(0.6, min(2.0, v)) }
         if let v = json["button_offset_x"] as? Double { buttonOffsetX = max(-150.0, min(150.0, v)) }
@@ -329,6 +331,7 @@ final class Settings: ObservableObject {
         json["ped_density"] = pedDensity
         json["no_traffic"] = noTraffic
         json["sky"] = sky
+        json["stretch"] = stretch
         json["distance_scaling"] = distanceScaling
         json["touch_sensitivity"] = (touch * 100).rounded() / 100
         json["aim_sensitivity"] = (aimSensitivity * 100).rounded() / 100
@@ -2121,6 +2124,13 @@ struct CLSettingsPanel: View {
                         ("75%", 0.75),
                         ("100%", 1.0)
                     ])
+                    CLChipPicker(label: "Stretched Resolution", selection: $s.stretch, options: [
+                        ("Off", "off"),
+                        ("4:3 Stretched", "4:3"),
+                        ("5:4 Stretched", "5:4")
+                    ])
+                    Text("Built-in option: the FiveM PvP stretched look — the game renders narrow (4:3 or 5:4) at the same height and the display stretches it to fill the wide screen, so things look larger and wider and fewer pixels means more FPS. The game's own HUD stretches too, like on PC; the touch buttons stay put. Applies on Play (the render size is fixed when the game starts); also check it in the console with stretch.")
+                        .font(.system(size: 10)).foregroundColor(muguetMuted).fixedSize(horizontal: false, vertical: true)
                     HStack {
                         Text("Texture Quality").foregroundColor(.white)
                         Spacer()

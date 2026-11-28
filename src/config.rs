@@ -258,7 +258,10 @@ const SETTING_VARS: &[&str] = &[
     "MUGUET_NO_TRAFFIC",
     // Sky Pack built-in mod: same reload hazard — the launcher picker
     // must be re-read from config.json on Play.
-    "MUGUET_SKY"
+    "MUGUET_SKY",
+    // Stretched Resolution built-in option: same reload hazard — the
+    // launcher picker must be re-read from config.json on Play.
+    "MUGUET_STRETCH",
 ];
 
 #[no_mangle]
@@ -388,6 +391,17 @@ fn settings(cfg_path: &Path) -> Vec<String> {
     let sky_on = crate::sky::sky_active(sky_look);
     if sky_on { set_default("MUGUET_SKY", sky_look); }
     crate::debug::console_line(&crate::sky::apply_sky(sky_look).line());
+
+    // Stretched Resolution built-in option: render narrow (4:3 or
+    // 5:4) at the same height; the display stretches it to fill the
+    // wide screen. The env flag is read by backbuffer_size() in
+    // app.rs when the engine starts. Default Off.
+    let stretch =
+        crate::stretch::parse_stretch(cfg.get("stretch").and_then(|v| v.as_str()).unwrap_or("off"))
+            .unwrap_or("off");
+    if crate::stretch::stretch_active(stretch) {
+        set_default("MUGUET_STRETCH", stretch);
+    }
 
     // NaN/inf used to flow through unchecked: NaN as i64 is 0 (clamped
     // to mode 2 only by accident) and fps=inf/1e9 reached the frame

@@ -2789,6 +2789,22 @@ pub extern "C" fn muguet_console_command(code: *const std::ffi::c_char) {
                 crate::debug::console_line("sky: weather EXTRASUNNY now (no rain) — set the same look in the launcher picker or the next Play restores the stock sky");
             }
         }
+        "stretch" => {
+            // Stretched Resolution built-in option: the engine renders
+            // at the narrow size from the moment it starts, so this
+            // cannot switch live — a mid-session crop-and-zoom would
+            // not be a stretch and buys no FPS, so it is not built.
+            // This only reports the current look; the launcher picker
+            // owns it and it applies on the next Play.
+            let current = crate::stretch::env_stretch().unwrap_or_else(|| "off".into());
+            match parts.next() {
+                None => crate::debug::console_line(&format!("stretch: {current} (off|4:3|5:4) — set it in the launcher picker; applies on next Play (restart to change)")),
+                Some(arg) => match crate::stretch::parse_stretch(arg) {
+                    Some(look) => crate::debug::console_line(&format!("stretch: {look} — set the same look in the launcher picker; it applies on the next Play (the engine render size is fixed at startup, it cannot switch live)")),
+                    None => crate::debug::console_line(&format!("unknown stretch: {arg} (try: stretch off|4:3|5:4)")),
+                },
+            }
+        }
         "cheat" => {
             let Some(code) = parts.next() else {
                 crate::debug::console_line("usage: cheat <CODE>  (e.g. cheat TURTLE, cheat LAWYERUP)");
@@ -2905,6 +2921,7 @@ pub extern "C" fn muguet_console_command(code: *const std::ffi::c_char) {
             crate::debug::console_line("  fp — toggle first-person camera");
             crate::debug::console_line("  notraffic [on|off] — no traffic cars, no peds, no parked cars (single-player; toggles live)");
             crate::debug::console_line("  sky <pink|black|cyan|purple|off> — FiveM PvP sky pack: sky colour + no clouds + no rain + no shadows (colour needs a restart; set it in the launcher picker to keep it)");
+            crate::debug::console_line("  stretch <off|4:3|5:4> — stretched resolution: render narrow, stretched wide (needs a restart; set it in the launcher picker)");
             crate::debug::console_line("  ram — show RAM footprint / free memory");
             crate::debug::console_line("  dlc — show mounted DLC packs + loweyezv status");
             crate::debug::console_line("  rpf <mod> — inspect a mod's dlc.rpf: true model name, setup2/content, .yft files (e.g. rpf loweyezv)");

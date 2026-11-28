@@ -65,13 +65,19 @@ fn backbuffer_size(window: &Window) -> (i32, i32) {
         let h: i32 = b.parse().ok()?;
         if (320..=2560).contains(&w) && (240..=1440).contains(&h) { Some((w, h)) } else { None }
     }) {
-        return (w, h);
+        return crate::stretch::apply_stretch(w, h);
     }
     let (mut w, mut h) = (s.width as f64 * scale, s.height as f64 * scale);
     let k = (2560.0 / w).min(1440.0 / h).min(1.0);
     w *= k;
     h *= k;
-    (((w as i32) & !1).max(320), ((h as i32) & !1).max(240))
+    // Stretched Resolution built-in option: keep the computed height,
+    // narrow the width to the chosen aspect (4:3 or 5:4). The engine
+    // renders narrow and the display stretches it to fill the screen
+    // — the same compositor stretch that makes a 0.5 render scale
+    // fill the screen today. Applies on both paths (MUGUET_RES and
+    // window x scale), so a custom resolution composes with it.
+    crate::stretch::apply_stretch(((w as i32) & !1).max(320), ((h as i32) & !1).max(240))
 }
 
 impl ApplicationHandler for App {
@@ -424,6 +430,16 @@ impl App {
         }
         let Some(window) = self.window.clone() else { return };
         let (w, h) = backbuffer_size(&window);
+        // Stretched Resolution: the console confirmation that the
+        // stretch is active — the surface is configured to this narrow
+        // size in present() and the display stretches it to fill the
+        // screen. The engine render size is fixed at startup, so the
+        // look cannot switch live; the launcher picker owns it.
+        if let Some(look) =
+            crate::stretch::env_stretch().filter(|l| crate::stretch::stretch_active(l))
+        {
+            crate::debug::console_line(&format!("[stretch] {look} active — rendering {w}x{h}, stretched to fill the screen (set in the launcher; restart to change)"));
+        }
         input::set_size(w, h);
         let mut args = self.args.clone();
         args.extend(["-wgpu".to_string(), format!("-width={w}"), format!("-height={h}")]);

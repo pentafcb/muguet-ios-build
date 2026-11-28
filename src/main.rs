@@ -32,6 +32,7 @@ mod proto;
 mod rpf;
 mod server;
 mod sky;
+mod stretch;
 #[cfg(target_os = "ios")]
 mod touch;
 
