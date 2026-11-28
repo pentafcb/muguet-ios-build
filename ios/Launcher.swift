@@ -53,6 +53,7 @@ final class Settings: ObservableObject {
     @Published var fxaa = true // true / false
     @Published var cityDensity = 0.5 // 0.0: Empty, 0.5: Medium, 1.0: Dense
     @Published var pedDensity = 0.5 // 0.0: Low, 0.5: Medium, 1.0: High
+    @Published var noTraffic = false // built-in mod: no traffic cars, no peds, no parked cars (single-player)
     @Published var distanceScaling = 0.0 // -0.5: Potato, 0.0: Normal, 0.5: Extended
 
     @Published var buttonScale = 1.0
@@ -219,6 +220,7 @@ final class Settings: ObservableObject {
         if let v = json["fxaa"] as? Bool { fxaa = v }
         if let v = json["city_density"] as? Double { cityDensity = max(0.0, min(1.0, v)) }
         if let v = json["ped_density"] as? Double { pedDensity = max(0.0, min(1.0, v)) }
+        if let v = json["no_traffic"] as? Bool { noTraffic = v }
         if let v = json["distance_scaling"] as? Double { distanceScaling = max(-0.5, min(1.0, v)) }
         if let v = json["button_scale"] as? Double { buttonScale = max(0.6, min(2.0, v)) }
         if let v = json["button_offset_x"] as? Double { buttonOffsetX = max(-150.0, min(150.0, v)) }
@@ -323,6 +325,7 @@ final class Settings: ObservableObject {
         json["fxaa"] = fxaa
         json["city_density"] = cityDensity
         json["ped_density"] = pedDensity
+        json["no_traffic"] = noTraffic
         json["distance_scaling"] = distanceScaling
         json["touch_sensitivity"] = (touch * 100).rounded() / 100
         json["aim_sensitivity"] = (aimSensitivity * 100).rounded() / 100
@@ -2261,6 +2264,9 @@ struct CLSettingsPanel: View {
                         ("Medium (50%)", 0.5),
                         ("Heavy (100%)", 1.0)
                     ])
+                    CLToggle(title: "No Traffic / No Peds", isOn: $s.noTraffic)
+                    Text("Built-in mod: no traffic cars, no peds, no parked cars. Stronger than the Empty chip — zeroes spawning every frame. Single-player only; also toggles live in the console with notraffic.")
+                        .font(.system(size: 10)).foregroundColor(muguetMuted).fixedSize(horizontal: false, vertical: true)
                     CLChipPicker(label: "Draw Distance & LOD Scale", selection: $s.distanceScaling, options: [
                         ("Save RAM (-0.5)", -0.5),
                         ("Standard (0.0)", 0.0),

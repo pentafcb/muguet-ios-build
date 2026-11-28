@@ -252,7 +252,10 @@ const SETTING_VARS: &[&str] = &[
     // here, and settings() uses set_default (never overwrites), so a
     // changed sandbox list / player limit in the launcher was silently
     // ignored on Play until the app was force-quit and relaunched.
-    "MUGUET_SANDBOX_VEHICLE", "MUGUET_SANDBOX_VEHICLES", "MUGUET_MAX_PLAYERS"
+    "MUGUET_SANDBOX_VEHICLE", "MUGUET_SANDBOX_VEHICLES", "MUGUET_MAX_PLAYERS",
+    // No Traffic / No Peds built-in mod: same reload hazard — the
+    // launcher toggle must be re-read from config.json on Play.
+    "MUGUET_NO_TRAFFIC"
 ];
 
 #[no_mangle]
@@ -273,6 +276,14 @@ pub fn reload() -> Vec<String> {
     crate::touch::update_settings_from_env();
     eprintln!("[config] launcher settings applied: {}", args.join(" "));
     args
+}
+
+// Pure decision for the No Traffic launcher toggle: the mod only
+// applies in single-player — in multiplayer the shared population
+// is the point, and frame() already zeroes densities for non-owned
+// population there. Kept pure so the harness can check it.
+fn no_traffic_enabled(no_traffic: bool, multiplayer: bool) -> bool {
+    no_traffic && !multiplayer
 }
 
 fn settings(cfg_path: &Path) -> Vec<String> {
@@ -359,6 +370,13 @@ fn settings(cfg_path: &Path) -> Vec<String> {
 
     let mut engine_args = Vec::new();
 
+    // No Traffic / No Peds built-in mod: the launcher toggle zeroes
+    // the population densities in settings.xml AND sets the env flag
+    // the script thread reads every session. Single-player only — in
+    // multiplayer the shared population is the point.
+    let no_traffic = no_traffic_enabled(cfg.get("no_traffic").and_then(|v| v.as_bool()).unwrap_or(false), flag("multiplayer"));
+    if no_traffic { set_default("MUGUET_NO_TRAFFIC", "1"); }
+
     // NaN/inf used to flow through unchecked: NaN as i64 is 0 (clamped
     // to mode 2 only by accident) and fps=inf/1e9 reached the frame
     // limiter unvalidated. Filter non-finite values and clamp.
@@ -393,8 +411,8 @@ fn settings(cfg_path: &Path) -> Vec<String> {
         postfx: num("postfx").map(|q| q as i64).unwrap_or(0),
         anisotropic_filtering: num("anisotropic_filtering").map(|q| q as i64).unwrap_or(0),
         fxaa: cfg.get("fxaa").and_then(|v| v.as_bool()).unwrap_or(true),
-        city_density: num("city_density").unwrap_or(0.5),
-        ped_density: num("ped_density").unwrap_or(0.5),
+        city_density: if no_traffic { 0.0 } else { num("city_density").unwrap_or(0.5) },
+        ped_density: if no_traffic { 0.0 } else { num("ped_density").unwrap_or(0.5) },
         distance_scaling: num("distance_scaling").unwrap_or(0.0),
         deep_optimization,
         ultra_low,

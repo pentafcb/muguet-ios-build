@@ -1196,6 +1196,10 @@ pub fn script_tick(caller: &mut Caller<'_, HostState>, thread: u64, tls: u64) ->
             crate::debug::console_line(&format!("[mp] session start: mode={} starter={}",
                 std::env::var("MUGUET_MODE").unwrap_or_else(|_| "?".into()),
                 std::env::var("MUGUET_SANDBOX_VEHICLE").unwrap_or_else(|_| "?".into())));
+            // New session: sync the No Traffic toggle from the
+            // launcher setting, so a change applies on the next Play
+            // without a force-quit.
+            sync_no_traffic_from_env();
             // Taken keys are (owner, key): the old owner is gone, and
             // a stale key permanently blocks mirroring a later car
             // that reuses the same entity handle.
@@ -1206,6 +1210,11 @@ pub fn script_tick(caller: &mut Caller<'_, HostState>, thread: u64, tls: u64) ->
         sandbox_starter_vehicle(&mut c, game);
         poll_spawn_request(&mut c, game);
         poll_console_actions(&mut c);
+        // No Traffic / No Peds built-in mod: the density natives
+        // reset every frame, so this runs per tick while the toggle
+        // is on. Single-player only (the flag cannot be on in
+        // multiplayer); the call itself is a no-op when off.
+        apply_no_traffic(&mut c);
 
         if WANT_BULLETS.swap(false, Ordering::Relaxed) {
             more_bullets(&mut c);
@@ -2445,6 +2454,74 @@ fn queue_console_action(action: ConsoleAction) {
     if let Ok(mut q) = CONSOLE_ACTIONS.lock() { q.push(action); }
 }
 
+// No Traffic / No Peds built-in mod: the five per-frame density
+// natives (COMMANDS) zeroed every script tick while the toggle is
+// on. The *ThisFrame multipliers reset every frame, so a one-time
+// call does nothing — this must run per tick. Single-player only:
+// in multiplayer the shared population is the point, and frame()
+// already zeroes densities for non-owned population there.
+static NO_TRAFFIC: AtomicBool = AtomicBool::new(false);
+// Probe result: whether the density natives are actually wired in
+// this wasm build. i_opt returns None when patch skipped a native
+// (the wasm never exported it), so the phone itself reports the
+// verdict on the console instead of us guessing.
+static TRAFFIC_PROBED: AtomicBool = AtomicBool::new(false);
+
+// Pure decision for the notraffic console argument: no argument
+// toggles, "on"/"off" set explicitly, anything else is a usage
+// error (None). Kept pure so the harness can check it.
+fn no_traffic_target(arg: Option<&str>, current: bool) -> Option<bool> {
+    match arg {
+        None => Some(!current),
+        Some("on") => Some(true),
+        Some("off") => Some(false),
+        Some(_) => None,
+    }
+}
+
+// Sync the live flag from the launcher setting (MUGUET_NO_TRAFFIC,
+// set by config.rs from the no_traffic JSON flag). Runs at session
+// start and on reload, so a launcher change applies on the next
+// Play; the console command flips the flag live in between.
+fn sync_no_traffic_from_env() {
+    let on = std::env::var("MUGUET_NO_TRAFFIC").map(|v| v == "1").unwrap_or(false)
+        && !crate::input::muguet_is_multiplayer();
+    NO_TRAFFIC.store(on, Ordering::Relaxed);
+    // Re-probe on the next tick: the setting may have changed, and
+    // the probe line is the phone's own verdict on the natives.
+    TRAFFIC_PROBED.store(false, Ordering::Relaxed);
+}
+
+fn apply_no_traffic(c: &mut Cmd) {
+    if !NO_TRAFFIC.load(Ordering::Relaxed) {
+        return;
+    }
+    if !TRAFFIC_PROBED.swap(true, Ordering::Relaxed) {
+        // Probe all five natives: each call also applies the 0.0
+        // multiplier when the native is wired, so probing costs
+        // nothing extra. A missing native is silent (c.i would
+        // no-op), so only this probe can say which ones exist.
+        let mut missing: Vec<&str> = Vec::new();
+        if c.i_opt("SetVehicleDensityMultiplierThisFrame", &[f(0.0)]).is_none() { missing.push("vehicle"); }
+        if c.i_opt("SetRandomVehicleDensityMultiplierThisFrame", &[f(0.0)]).is_none() { missing.push("random vehicle"); }
+        if c.i_opt("SetParkedVehicleDensityMultiplierThisFrame", &[f(0.0)]).is_none() { missing.push("parked"); }
+        if c.i_opt("SetPedDensityMultiplierThisFrame", &[f(0.0)]).is_none() { missing.push("ped"); }
+        if c.i_opt("SetScenarioPedDensityMultiplierThisFrame", &[f(0.0), f(0.0)]).is_none() { missing.push("scenario ped"); }
+        if missing.is_empty() {
+            crate::debug::console_line("[traffic] density natives wired (5/5) — traffic cars + peds off");
+        } else if missing.len() == 5 {
+            crate::debug::console_line("[traffic] density natives NOT in this build (0/5) — settings densities only (CityDensity 0); some traffic may remain");
+        } else {
+            crate::debug::console_line(&format!("[traffic] only {}/5 density natives wired — missing: {}; partial coverage", 5 - missing.len(), missing.join(", ")));
+        }
+    }
+    c.i("SetVehicleDensityMultiplierThisFrame", &[f(0.0)]);
+    c.i("SetRandomVehicleDensityMultiplierThisFrame", &[f(0.0)]);
+    c.i("SetParkedVehicleDensityMultiplierThisFrame", &[f(0.0)]);
+    c.i("SetPedDensityMultiplierThisFrame", &[f(0.0)]);
+    c.i("SetScenarioPedDensityMultiplierThisFrame", &[f(0.0), f(0.0)]);
+}
+
 fn poll_console_actions(c: &mut Cmd) {
     let actions: Vec<ConsoleAction> = CONSOLE_ACTIONS.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
     for action in actions {
@@ -2691,6 +2768,29 @@ pub extern "C" fn muguet_console_command(code: *const std::ffi::c_char) {
             request_toggle_first_person();
             crate::debug::console_line("first-person toggled");
         }
+        // No Traffic / No Peds built-in mod: flip the live flag; the
+        // per-frame natives in script_tick do the work from the next
+        // tick. Single-player only, like cheats. Turning it off
+        // releases the multipliers, but the settings.xml densities
+        // stay 0 from this launch until restart.
+        "notraffic" | "traffic" => {
+            if crate::input::muguet_is_multiplayer() {
+                crate::debug::console_line("no traffic is single-player only");
+                return;
+            }
+            let arg = parts.next().map(|a| a.to_lowercase());
+            let Some(target) = no_traffic_target(arg.as_deref(), NO_TRAFFIC.load(Ordering::Relaxed)) else {
+                crate::debug::console_line("usage: notraffic [on|off]  (bare notraffic toggles)");
+                return;
+            };
+            NO_TRAFFIC.store(target, Ordering::Relaxed);
+            TRAFFIC_PROBED.store(false, Ordering::Relaxed);
+            if target {
+                crate::debug::console_line("no traffic ON — traffic cars + peds stop spawning from the next frame (already-spawned ones fade as you drive away)");
+            } else {
+                crate::debug::console_line("no traffic OFF — spawning resumes next frame (settings densities still 0 from this launch — raise them in the launcher and restart for full traffic)");
+            }
+        }
         "ram" => {
             let (text, _) = crate::debug::ram_tracker();
             if text.is_empty() {
@@ -2737,6 +2837,9 @@ pub extern "C" fn muguet_console_command(code: *const std::ffi::c_char) {
         }
         "reload" => {
             crate::config::muguet_reload_settings();
+            // Settings re-read: re-sync the No Traffic flag so a
+            // launcher toggle change applies without a restart.
+            sync_no_traffic_from_env();
             crate::debug::console_line("settings reloaded from the launcher config");
         }
         "lowram" => {
@@ -2763,6 +2866,7 @@ pub extern "C" fn muguet_console_command(code: *const std::ffi::c_char) {
             crate::debug::console_line("  weather <name> — EXTRASUNNY CLEAR CLOUDS SMOG FOGGY OVERCAST RAIN THUNDER CLEARING NEUTRAL SNOW BLIZZARD SNOWLIGHT XMAS");
             crate::debug::console_line("  cheat <CODE> — type a GTA cheat (e.g. cheat TURTLE, cheat LAWYERUP clears wanted)");
             crate::debug::console_line("  fp — toggle first-person camera");
+            crate::debug::console_line("  notraffic [on|off] — no traffic cars, no peds, no parked cars (single-player; toggles live)");
             crate::debug::console_line("  ram — show RAM footprint / free memory");
             crate::debug::console_line("  dlc — show mounted DLC packs + loweyezv status");
             crate::debug::console_line("  rpf <mod> — inspect a mod's dlc.rpf: true model name, setup2/content, .yft files (e.g. rpf loweyezv)");
