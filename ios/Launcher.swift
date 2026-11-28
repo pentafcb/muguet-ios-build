@@ -3308,11 +3308,10 @@ struct LauncherView: View {
                 if importer.ready { start() } else { picking = true }
             }) {
                 HStack(spacing: 8) {
-                    Image(systemName: "gamecontroller.fill")
-                        .font(.system(size: 11))
-                        .foregroundColor(.white)
+                    Image("HeroIcon")
+                        .resizable()
+                        .scaledToFill()
                         .frame(width: 22, height: 22)
-                        .background(LinearGradient(colors: [Color(hex: "f7b731"), Color(hex: "7ac74f")], startPoint: .topLeading, endPoint: .bottomTrailing))
                         .clipShape(RoundedRectangle(cornerRadius: 2))
                     Text("GTA V files")
                         .font(.system(size: 11, weight: .semibold))
